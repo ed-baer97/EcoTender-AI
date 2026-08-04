@@ -1,0 +1,7 @@
+[
+  {"sku": "BOOM_BARRIER_M", "name": "Боновое заграждение", "unit": "m", "category": "oil_spill", "country_code": "KZ", "price": 45000, "currency": "KZT"},
+  {"sku": "OIL_SOIL_REMOVE_M3", "name": "Вывоз нефтезагрязнённого грунта", "unit": "m3", "category": "reclamation", "country_code": "KZ", "price": 28000, "currency": "KZT"},
+  {"sku": "WATER_LAB_SAMPLE", "name": "Лабораторный анализ морской воды", "unit": "sample", "category": "monitoring", "country_code": "KZ", "price": 35000, "currency": "KZT"},
+  {"sku": "GEOTEXTILE_M2", "name": "Геотекстиль берегоукрепление", "unit": "m2", "category": "shore", "country_code": "KZ", "price": 1200, "currency": "KZT"},
+  {"sku": "DREDGE_M3", "name": "Дноуглубление", "unit": "m3", "category": "dredging", "country_code": "KZ", "price": 8500, "currency": "KZT"}
+]

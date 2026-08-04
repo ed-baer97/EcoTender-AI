@@ -1,0 +1,22 @@
+{
+  "version": "catboost-v1",
+  "artifact": "ml\\models\\catboost_risk_v1.cbm",
+  "rows": 135,
+  "positive_rate": 0.32592592592592595,
+  "features": [
+    "amount_log",
+    "overprice_ratio",
+    "participants_count",
+    "contractor_wins_2y",
+    "contractor_win_rate",
+    "amendments_count",
+    "amendment_amount_ratio",
+    "duration_days",
+    "area_sq_m_log",
+    "single_bidder",
+    "eco_category",
+    "procurement_method",
+    "region_code",
+    "country_code"
+  ]
+}
