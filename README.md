@@ -22,7 +22,8 @@ python scripts/smoke_check.py
 | MinIO         | http://localhost:9101  |
 
 **Ключи API** — через кабинет администратора (без правки `.env` и recreate):  
-войти как `admin@ecotender.kz` / `admin123` → **Кабинет администратора** → LLM / парсеры.
+войти как `admin@ecotender.kz` / `admin123` → **Кабинет администратора** → LLM / парсеры.  
+At rest ключи шифруются Fernet (`SECRET_ENCRYPTION_KEY` / fallback `JWT_SECRET`), в Redis/file — префикс `enc:v1:`.
 
 ## Документация
 
@@ -38,6 +39,7 @@ python scripts/smoke_check.py
 | [docs/API.md](docs/API.md) | REST API контракты |
 | [docs/MVP_48H.md](docs/MVP_48H.md) | Roadmap 48ч, задачи по ролям |
 | [docs/SCALING.md](docs/SCALING.md) | Путь к гос. платформе |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы 1→3: polish → secrets → platform |
 
 ## Стек
 

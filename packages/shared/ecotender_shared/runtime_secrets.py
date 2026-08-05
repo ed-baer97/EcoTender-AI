@@ -1,11 +1,14 @@
 """Runtime integrations — LLM providers & parsing services.
 
-Stored as JSON in Redis + file. Active LLM/parser sync to flat env-style keys
-so existing consumers (llm_explain, goszakup) keep working via get_config_value().
+Stored as JSON in Redis + file. Secret fields (api_key / token / LLM_API_KEY /
+GOSZAKUP_TOKEN) are Fernet-encrypted at rest (prefix enc:v1:).
+In-memory consumers always see plaintext via get_config_value / get_active_*.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -17,7 +20,10 @@ from typing import Any
 REDIS_HASH = "ecotender:runtime_config"
 REDIS_AUDIT = "ecotender:runtime_config:audit"
 INTEGRATIONS_KEY = "integrations"
+ENC_PREFIX = "enc:v1:"
 DEFAULT_FILE = Path(os.getenv("RUNTIME_CONFIG_PATH", "/data/runtime/config.json"))
+
+SECRET_FLAT_KEYS = frozenset({"LLM_API_KEY", "GOSZAKUP_TOKEN"})
 
 DEFAULT_LLMS: list[dict[str, Any]] = [
     {
@@ -43,7 +49,6 @@ DEFAULT_PARSERS: list[dict[str, Any]] = [
     }
 ]
 
-# Flat keys still writable for backward compatibility / get_config_value
 FLAT_KEYS = {
     "LLM_API_KEY",
     "LLM_BASE_URL",
@@ -52,7 +57,85 @@ FLAT_KEYS = {
     "GOSZAKUP_TOKEN",
     "GOSZAKUP_BASE_URL",
 }
-ALLOWED_KEYS = FLAT_KEYS  # legacy alias
+ALLOWED_KEYS = FLAT_KEYS
+
+
+def _fernet():
+    """Fernet from SECRET_ENCRYPTION_KEY (preferred) or JWT_SECRET fallback."""
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("cryptography package required for secret encryption") from exc
+
+    material = (
+        os.getenv("SECRET_ENCRYPTION_KEY")
+        or os.getenv("JWT_SECRET")
+        or "ecotender-dev-only-change-me"
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def seal_secret(value: str | None) -> str:
+    """Encrypt plaintext for storage. Empty / already sealed -> passthrough."""
+    if not value:
+        return ""
+    if value.startswith(ENC_PREFIX):
+        return value
+    token = _fernet().encrypt(value.encode("utf-8")).decode("ascii")
+    return f"{ENC_PREFIX}{token}"
+
+
+def unseal_secret(value: str | None) -> str:
+    """Decrypt sealed value; legacy plaintext returned as-is."""
+    if not value:
+        return ""
+    if not value.startswith(ENC_PREFIX):
+        return value
+    try:
+        return _fernet().decrypt(value[len(ENC_PREFIX) :].encode("ascii")).decode("utf-8")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _decrypt_store_inplace(store: dict[str, Any]) -> None:
+    for key in SECRET_FLAT_KEYS:
+        if key in store and isinstance(store[key], str):
+            store[key] = unseal_secret(store[key])
+    integ = store.get(INTEGRATIONS_KEY)
+    if not isinstance(integ, dict):
+        return
+    for llm in integ.get("llms") or []:
+        if isinstance(llm, dict) and "api_key" in llm:
+            llm["api_key"] = unseal_secret(llm.get("api_key") or "")
+    for parser in integ.get("parsers") or []:
+        if isinstance(parser, dict) and "token" in parser:
+            parser["token"] = unseal_secret(parser.get("token") or "")
+
+
+def _encrypt_store_copy(store: dict[str, Any]) -> dict[str, Any]:
+    """Copy with secrets sealed for Redis/file persistence."""
+    out: dict[str, Any] = {}
+    for k, v in store.items():
+        if k == INTEGRATIONS_KEY and isinstance(v, dict):
+            llms = []
+            for llm in v.get("llms") or []:
+                row = {**llm}
+                if row.get("api_key"):
+                    row["api_key"] = seal_secret(str(row["api_key"]))
+                llms.append(row)
+            parsers = []
+            for parser in v.get("parsers") or []:
+                row = {**parser}
+                if row.get("token"):
+                    row["token"] = seal_secret(str(row["token"]))
+                parsers.append(row)
+            out[k] = {"llms": llms, "parsers": parsers}
+        elif k in SECRET_FLAT_KEYS and isinstance(v, str) and v:
+            out[k] = seal_secret(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _redis():
@@ -119,7 +202,7 @@ def mask_secret(value: str | None) -> str | None:
 
 
 def _read_raw_store() -> dict[str, Any]:
-    """Merge Redis hash + file into one dict (Redis wins for scalar keys)."""
+    """Merge Redis + file, then decrypt secrets into memory."""
     store = _load_file()
     client = _redis()
     if client:
@@ -134,17 +217,19 @@ def _read_raw_store() -> dict[str, Any]:
                     store[k] = v
         except Exception:  # noqa: BLE001
             pass
+    _decrypt_store_inplace(store)
     return store
 
 
 def _write_store(store: dict[str, Any]) -> None:
-    _save_file(store)
+    sealed = _encrypt_store_copy(store)
+    _save_file(sealed)
     client = _redis()
     if not client:
         return
     try:
         pipe = client.pipeline()
-        for k, v in store.items():
+        for k, v in sealed.items():
             if k == INTEGRATIONS_KEY:
                 pipe.hset(REDIS_HASH, k, json.dumps(v, ensure_ascii=False))
             elif v is None:
@@ -157,7 +242,6 @@ def _write_store(store: dict[str, Any]) -> None:
 
 
 def _sync_flat_from_integrations(store: dict[str, Any]) -> None:
-    """Push active LLM / parser fields into flat keys for consumers."""
     integ = store.get(INTEGRATIONS_KEY) or {}
     llms = integ.get("llms") or []
     parsers = integ.get("parsers") or []
@@ -186,10 +270,9 @@ def _ensure_integrations(store: dict[str, Any]) -> dict[str, Any]:
 
     if not llms:
         seeded = {**DEFAULT_LLMS[0]}
-        # migrate legacy flat key into seed
         flat_key = store.get("LLM_API_KEY") or os.getenv("LLM_API_KEY") or ""
         if flat_key:
-            seeded["api_key"] = flat_key
+            seeded["api_key"] = unseal_secret(flat_key) if flat_key.startswith(ENC_PREFIX) else flat_key
         if store.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"):
             seeded["base_url"] = store.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
         if store.get("LLM_MODEL") or os.getenv("LLM_MODEL"):
@@ -202,7 +285,7 @@ def _ensure_integrations(store: dict[str, Any]) -> dict[str, Any]:
         seeded = {**DEFAULT_PARSERS[0]}
         flat_tok = store.get("GOSZAKUP_TOKEN") or os.getenv("GOSZAKUP_TOKEN") or ""
         if flat_tok:
-            seeded["token"] = flat_tok
+            seeded["token"] = unseal_secret(flat_tok) if flat_tok.startswith(ENC_PREFIX) else flat_tok
         if store.get("GOSZAKUP_BASE_URL") or os.getenv("GOSZAKUP_BASE_URL"):
             seeded["base_url"] = store.get("GOSZAKUP_BASE_URL") or os.getenv("GOSZAKUP_BASE_URL")
         parsers = [seeded]
@@ -212,6 +295,7 @@ def _ensure_integrations(store: dict[str, Any]) -> dict[str, Any]:
 
 
 def bootstrap_from_file() -> None:
+    """Load store, decrypt legacy plaintext, re-persist encrypted (migration)."""
     store = _ensure_integrations(_read_raw_store())
     _sync_flat_from_integrations(store)
     _write_store(store)
@@ -258,9 +342,6 @@ def _save_integrations(llms: list[dict], parsers: list[dict], *, actor: str, act
     _write_store(store)
     _audit(action, key, actor)
     return get_integrations(mask=True)
-
-
-# ── LLM CRUD ────────────────────────────────────────────────────────────────
 
 
 def create_llm(body: dict[str, Any], *, actor: str = "admin") -> dict[str, Any]:
@@ -326,9 +407,6 @@ def get_active_llm_raw() -> dict[str, Any] | None:
     store = _ensure_integrations(_read_raw_store())
     llms = store[INTEGRATIONS_KEY]["llms"]
     return next((x for x in llms if x.get("active")), llms[0] if llms else None)
-
-
-# ── Parser CRUD ──────────────────────────────────────────────────────────────
 
 
 def create_parser(body: dict[str, Any], *, actor: str = "admin") -> dict[str, Any]:
@@ -408,9 +486,6 @@ def get_active_parser_raw(source_code: str | None = None) -> dict[str, Any] | No
     return next((x for x in parsers if x.get("active")), parsers[0] if parsers else None)
 
 
-# ── Legacy flat config API (still used by overview chips) ────────────────────
-
-
 def list_config(*, include_values: bool = False) -> list[dict[str, Any]]:
     catalog = [
         {"key": "LLM_API_KEY", "label": "LLM API Key", "category": "llm", "secret": True},
@@ -446,7 +521,6 @@ def set_config_value(key: str, value: str, *, actor: str = "admin") -> dict[str,
         raise KeyError(f"Unknown config key: {key}")
     store = _ensure_integrations(_read_raw_store())
     store[key] = value.strip()
-    # mirror into active integration
     if key.startswith("LLM_"):
         llms = store[INTEGRATIONS_KEY]["llms"]
         active = next((x for x in llms if x.get("active")), None)
@@ -465,7 +539,7 @@ def set_config_value(key: str, value: str, *, actor: str = "admin") -> dict[str,
             mapping = {"GOSZAKUP_TOKEN": "token", "GOSZAKUP_BASE_URL": "base_url"}
             active[mapping[key]] = value.strip()
     _write_store(store)
-    _audit("set", key, actor, mask_secret(value) if "KEY" in key or "TOKEN" in key else value)
+    _audit("set", key, actor, mask_secret(value) if key in SECRET_FLAT_KEYS else value)
     return next(r for r in list_config() if r["key"] == key)
 
 

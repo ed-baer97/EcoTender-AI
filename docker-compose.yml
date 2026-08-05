@@ -78,6 +78,7 @@ services:
       GEO_SERVICE_URL: http://geo-service:8003
       RISK_SERVICE_URL: http://risk-engine:8004
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-${JWT_SECRET:-change-me-in-production}}
       CELERY_BROKER_URL: redis://redis:6379/1
       RUNTIME_CONFIG_PATH: /data/runtime/config.json
     volumes:
@@ -154,6 +155,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gpt-5.6-terra}
       MODEL_PATH: /models/catboost_risk_v1.cbm
       RUNTIME_CONFIG_PATH: /data/runtime/config.json
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-${JWT_SECRET:-change-me-in-production}}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       SERVICE_PORT: 8004
     ports:
       - "8004:8004"
@@ -185,6 +188,8 @@ services:
       GOSZAKUP_PAGE_LIMIT: ${GOSZAKUP_PAGE_LIMIT:-50}
       GOSZAKUP_MAX_PAGES: ${GOSZAKUP_MAX_PAGES:-3}
       RUNTIME_CONFIG_PATH: /data/runtime/config.json
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-${JWT_SECRET:-change-me-in-production}}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
     volumes:
       - ./data/runtime:/data/runtime:ro
     depends_on:
