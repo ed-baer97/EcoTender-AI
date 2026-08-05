@@ -27,7 +27,7 @@ from ecotender_shared.ingestion.eco_filter import (
 )
 from ecotender_shared.schemas import NormalizedTender
 
-BASE_URL = os.getenv("GOSZAKUP_BASE_URL", "https://ows.goszakup.gov.kz").rstrip("/")
+BASE_URL_DEFAULT = "https://ows.goszakup.gov.kz"
 TRADE_METHOD_LABELS = {
     2: "open_tender",
     3: "request_price",
@@ -50,7 +50,14 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
         sample_path: str | Path | None = None,
         prefer_caspian: bool = True,
     ) -> None:
-        self.token = token or os.getenv("GOSZAKUP_TOKEN") or os.getenv("GOSZAKUP_API_TOKEN")
+        from ecotender_shared.runtime_secrets import get_config_value
+
+        self.token = (
+            token
+            or get_config_value("GOSZAKUP_TOKEN")
+            or os.getenv("GOSZAKUP_TOKEN")
+            or os.getenv("GOSZAKUP_API_TOKEN")
+        )
         self.limit = limit
         self.max_pages = max_pages
         self.prefer_caspian = prefer_caspian
@@ -62,6 +69,14 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
                 Path(__file__).resolve().parents[4] / "data" / "fixtures" / "goszakup_sample.json",
             ]
             self.sample_path = next((p for p in candidates if p.exists()), candidates[-1])
+
+    @property
+    def base_url(self) -> str:
+        from ecotender_shared.runtime_secrets import get_config_value
+
+        return (
+            get_config_value("GOSZAKUP_BASE_URL", BASE_URL_DEFAULT) or BASE_URL_DEFAULT
+        ).rstrip("/")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -102,7 +117,7 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
 
         path = cursor or f"/v3/trd-buy/all?limit={self.limit}"
         pages = 0
-        with httpx.Client(base_url=BASE_URL, headers=self._headers(), timeout=45.0) as client:
+        with httpx.Client(base_url=self.base_url, headers=self._headers(), timeout=45.0) as client:
             while path and pages < self.max_pages:
                 resp = client.get(path if path.startswith("/") else f"/{path}")
                 resp.raise_for_status()
@@ -133,7 +148,7 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
                 payload=payload,
             )
 
-        with httpx.Client(base_url=BASE_URL, headers=self._headers(), timeout=45.0) as client:
+        with httpx.Client(base_url=self.base_url, headers=self._headers(), timeout=45.0) as client:
             resp = client.get(f"/v3/trd-buy/{ref}")
             resp.raise_for_status()
             data = resp.json()

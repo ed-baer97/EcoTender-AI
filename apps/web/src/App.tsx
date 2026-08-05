@@ -27,6 +27,7 @@ import {
   Polyline,
   Polygon,
 } from "react-leaflet";
+import AdminPanel from "./AdminPanel";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 const GIBS_URL =
@@ -107,15 +108,25 @@ export default function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [email, setEmail] = useState("analyst@ecotender.kz");
   const [password, setPassword] = useState("analyst123");
+  const [view, setView] = useState<"map" | "admin">("map");
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
 
   useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY);
     if (!token) return;
     fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => (r.ok ? r.json() : null))
-      .then((u) => u && setUser(u))
-      .catch(() => localStorage.removeItem(TOKEN_KEY));
-  }, []);
+      .then((u) => {
+        if (u) setUser(u);
+        else {
+          localStorage.removeItem(TOKEN_KEY);
+          setToken(null);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+      });
+  }, [token]);
 
   useEffect(() => {
     (async () => {
@@ -206,14 +217,22 @@ export default function App() {
     }
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.access_token);
+    setToken(data.access_token);
     setUser(data.user);
     setLoginOpen(false);
     setError(null);
+    if (data.user?.role === "admin") setView("admin");
   }
 
   function logout() {
     localStorage.removeItem(TOKEN_KEY);
+    setToken(null);
     setUser(null);
+    setView("map");
+  }
+
+  if (view === "admin" && user?.role === "admin" && token) {
+    return <AdminPanel token={token} user={user} onBack={() => setView("map")} />;
   }
 
   return (
@@ -249,6 +268,11 @@ export default function App() {
             control={<Switch size="small" checked={showWork} onChange={(_, v) => setShowWork(v)} />}
             label={<Typography variant="caption">Полигоны</Typography>}
           />
+          {user?.role === "admin" && (
+            <Button size="small" variant="contained" color="secondary" onClick={() => setView("admin")}>
+              Админка
+            </Button>
+          )}
           {user ? (
             <Chip
               size="small"
@@ -452,7 +476,7 @@ export default function App() {
               size="small"
             />
             <Typography variant="caption" color="text.secondary">
-              demo: analyst@ecotender.kz / analyst123
+              analyst@ecotender.kz / analyst123 · admin@ecotender.kz / admin123
             </Typography>
           </Stack>
         </DialogContent>

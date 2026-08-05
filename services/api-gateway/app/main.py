@@ -1,4 +1,4 @@
-"""API Gateway / BFF — auth, request-id, reverse proxy to domain services."""
+"""API Gateway / BFF — auth, admin secrets, reverse proxy to domain services."""
 
 from __future__ import annotations
 
@@ -11,7 +11,17 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="EcoTender API Gateway", version="0.1.0")
+from ecotender_shared.runtime_secrets import (
+    ALLOWED_KEYS,
+    bootstrap_from_file,
+    delete_config_value,
+    get_config_value,
+    list_audit,
+    list_config,
+    set_config_value,
+)
+
+app = FastAPI(title="EcoTender API Gateway", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,12 +40,16 @@ SERVICES = {
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://localhost:6379/1"))
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 
-# Demo users for hackathon (replace with IAM later)
 DEMO_USERS = {
     "analyst@ecotender.kz": {"password": "analyst123", "role": "analyst", "name": "Аналитик"},
     "admin@ecotender.kz": {"password": "admin123", "role": "admin", "name": "Администратор"},
     "viewer@ecotender.kz": {"password": "viewer123", "role": "viewer", "name": "Наблюдатель"},
 }
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    bootstrap_from_file()
 
 
 def _b64url(data: bytes) -> str:
@@ -50,7 +64,7 @@ def _issue_jwt(email: str, role: str, name: str) -> str:
     import json
     import time
 
-    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
     payload = _b64url(
         json.dumps(
             {
@@ -58,7 +72,9 @@ def _issue_jwt(email: str, role: str, name: str) -> str:
                 "role": role,
                 "name": name,
                 "exp": int(time.time()) + 60 * 60 * 12,
-            }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
         ).encode()
     )
     sig = hmac.new(JWT_SECRET.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
@@ -66,11 +82,11 @@ def _issue_jwt(email: str, role: str, name: str) -> str:
 
 
 def _decode_jwt(token: str) -> dict[str, Any] | None:
+    import base64
     import hashlib
     import hmac
     import json
     import time
-    import base64
 
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
@@ -86,6 +102,22 @@ def _decode_jwt(token: str) -> dict[str, Any] | None:
         return data
     except Exception:  # noqa: BLE001
         return None
+
+
+def _require_user(request: Request) -> dict[str, Any]:
+    auth = request.headers.get("Authorization") or ""
+    token = auth.replace("Bearer ", "").strip()
+    data = _decode_jwt(token) if token else None
+    if not data:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return data
+
+
+def _require_admin(request: Request) -> dict[str, Any]:
+    data = _require_user(request)
+    if data.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return data
 
 
 @app.middleware("http")
@@ -106,6 +138,10 @@ class LoginBody(BaseModel):
     password: str = Field(min_length=1)
 
 
+class SecretUpsert(BaseModel):
+    value: str = Field(min_length=1, max_length=4000)
+
+
 @app.post("/api/v1/auth/login")
 async def login(body: LoginBody) -> dict[str, Any]:
     email = body.email.strip().lower()
@@ -122,12 +158,103 @@ async def login(body: LoginBody) -> dict[str, Any]:
 
 @app.get("/api/v1/auth/me")
 async def me(request: Request) -> dict[str, Any]:
-    auth = request.headers.get("Authorization") or ""
-    token = auth.replace("Bearer ", "").strip()
-    data = _decode_jwt(token) if token else None
-    if not data:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    data = _require_user(request)
     return {"email": data.get("sub"), "role": data.get("role"), "name": data.get("name")}
+
+
+@app.get("/api/v1/admin/secrets")
+async def admin_list_secrets(request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    items = list_config()
+    return {"items": items, "total": len(items)}
+
+
+@app.put("/api/v1/admin/secrets/{key}")
+async def admin_set_secret(key: str, body: SecretUpsert, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    if key not in ALLOWED_KEYS:
+        raise HTTPException(status_code=404, detail=f"Unknown key: {key}")
+    item = set_config_value(key, body.value, actor=str(admin.get("sub") or "admin"))
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/v1/admin/secrets/{key}")
+async def admin_delete_secret(key: str, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    if key not in ALLOWED_KEYS:
+        raise HTTPException(status_code=404, detail=f"Unknown key: {key}")
+    item = delete_config_value(key, actor=str(admin.get("sub") or "admin"))
+    return {"ok": True, "item": item}
+
+
+@app.get("/api/v1/admin/audit")
+async def admin_secrets_audit(request: Request, limit: int = 50) -> dict[str, Any]:
+    _require_admin(request)
+    return {"items": list_audit(limit=min(limit, 200))}
+
+
+@app.post("/api/v1/admin/secrets/LLM_API_KEY/test")
+async def admin_test_llm(request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    api_key = get_config_value("LLM_API_KEY")
+    base_url = (get_config_value("LLM_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
+    model = get_config_value("LLM_MODEL", "gpt-5.6-terra") or "gpt-5.6-terra"
+    if not api_key:
+        raise HTTPException(status_code=400, detail="LLM_API_KEY is empty — save a key first")
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Reply with OK"}],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            ok = resp.status_code < 400
+            body: dict[str, Any] = {}
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                body = {"raw": resp.text[:300]}
+            return {
+                "ok": ok,
+                "status_code": resp.status_code,
+                "model": model,
+                "base_url": base_url,
+                "preview": (
+                    (body.get("choices") or [{}])[0].get("message", {}).get("content")
+                    if ok
+                    else body.get("error") or body
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/admin/overview")
+async def admin_overview(request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    secrets = list_config()
+    statuses: dict[str, Any] = {}
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for name, base in SERVICES.items():
+            try:
+                r = await client.get(f"{base}/health")
+                statuses[name] = r.json()
+            except Exception as exc:  # noqa: BLE001
+                statuses[name] = {"status": "down", "error": str(exc)}
+    return {
+        "services": statuses,
+        "keys_configured": sum(1 for s in secrets if s.get("configured")),
+        "keys_total": len(secrets),
+        "llm_ready": any(s["key"] == "LLM_API_KEY" and s.get("configured") for s in secrets),
+        "goszakup_ready": any(s["key"] == "GOSZAKUP_TOKEN" and s.get("configured") for s in secrets),
+    }
 
 
 @app.get("/api/v1/ready")
@@ -153,7 +280,7 @@ async def ingest_sources() -> dict[str, Any]:
                 "country_code": "KZ",
                 "name": "goszakup.gov.kz OWS v3",
                 "docs": "https://goszakup.gov.kz/ru/developer/ows_v3",
-                "auth": "Bearer token via GOSZAKUP_TOKEN (offline sample if empty)",
+                "auth": "Bearer token via GOSZAKUP_TOKEN (admin panel or .env)",
             },
             {
                 "code": "FIXTURES_CASPIAN",
@@ -167,8 +294,10 @@ async def ingest_sources() -> dict[str, Any]:
 
 
 @app.post("/api/v1/ingest/sources/{source_code}/run")
-async def ingest_run(source_code: str) -> dict[str, Any]:
-    """Enqueue Celery crawl_source task."""
+async def ingest_run(source_code: str, request: Request) -> dict[str, Any]:
+    user = _require_user(request)
+    if user.get("role") not in {"admin", "analyst"}:
+        raise HTTPException(status_code=403, detail="analyst or admin required")
     try:
         from celery import Celery
 
@@ -205,7 +334,6 @@ async def _proxy(base: str, path: str, request: Request) -> Response:
 
 @app.post("/api/v1/tenders/{tender_ref}/risk")
 async def score_tender_card(tender_ref: str) -> Any:
-    """Compose tender + risk for UI convenience (BFF pattern)."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         t = await client.get(f"{SERVICES['tender']}/v1/tenders/{tender_ref}")
         tender = t.json()

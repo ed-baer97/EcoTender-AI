@@ -10,7 +10,6 @@
 
 ```bash
 cp .env.example .env
-# опционально: LLM_API_KEY=sk-...  (без ключа — template_fallback)
 docker compose up -d --build
 ```
 | Сервис        | URL                    |
@@ -20,6 +19,9 @@ docker compose up -d --build
 | API Docs      | http://localhost:8000/docs |
 | Flower        | http://localhost:5555  |
 | MinIO         | http://localhost:9101  |
+
+**Ключи API** — через админку (без правки `.env` и recreate):  
+войти как `admin@ecotender.kz` / `admin123` → кнопка **Админка** → LLM / Goszakup.
 
 ## Документация
 

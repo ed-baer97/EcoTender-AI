@@ -28,6 +28,20 @@ Headers:
 | POST | `/auth/refresh` | refresh token |
 | GET | `/auth/me` | текущий пользователь |
 
+## Admin (role: admin)
+
+| Method | Path | Описание |
+|--------|------|----------|
+| GET | `/admin/overview` | статус сервисов + готовность ключей |
+| GET | `/admin/secrets` | каталог ключей (значения секретов маскированы) |
+| PUT | `/admin/secrets/{key}` | сохранить runtime-ключ (Redis + file) |
+| DELETE | `/admin/secrets/{key}` | удалить runtime-значение (останется `.env`) |
+| POST | `/admin/secrets/LLM_API_KEY/test` | проверка LLM API |
+| GET | `/admin/audit` | аудит изменений ключей |
+
+Ключи: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_PROVIDER`, `GOSZAKUP_TOKEN`, `GOSZAKUP_BASE_URL`.  
+Demo admin: `admin@ecotender.kz` / `admin123`.
+
 Роли: `viewer`, `analyst`, `auditor`, `admin`.
 
 ---

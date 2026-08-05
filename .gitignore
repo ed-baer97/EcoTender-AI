@@ -4,6 +4,7 @@ __pycache__/
 node_modules/
 dist/
 .env
+data/runtime/config.json
 .DS_Store
 *.cbm
 .idea/
