@@ -36,7 +36,16 @@ class ExplainResult:
 
 def _llm_config() -> dict[str, str | None]:
     try:
-        from ecotender_shared.runtime_secrets import get_config_value
+        from ecotender_shared.runtime_secrets import get_active_llm_raw, get_config_value
+
+        active = get_active_llm_raw()
+        if active:
+            return {
+                "provider": active.get("provider") or "openai",
+                "api_key": active.get("api_key") or os.getenv("OPENAI_API_KEY"),
+                "base_url": (active.get("base_url") or "https://api.openai.com/v1").rstrip("/"),
+                "model": active.get("model") or "gpt-5.6-terra",
+            }
     except ImportError:  # pragma: no cover
         get_config_value = lambda key, default=None: os.getenv(key, default)  # type: ignore[assignment]
 

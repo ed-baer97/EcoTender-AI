@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -8,16 +11,9 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
-  IconButton,
+  FormControlLabel,
   Stack,
-  Tab,
-  Tabs,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
+  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -26,30 +22,32 @@ const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 
 type User = { email: string; role: string; name: string };
 
-type SecretItem = {
-  key: string;
-  label: string;
-  category: string;
-  secret: boolean;
-  description: string;
-  placeholder?: string;
-  configured: boolean;
-  source: string;
-  value?: string | null;
-  value_masked?: string | null;
-  updated_at?: string | null;
-  updated_by?: string | null;
+type LlmItem = {
+  id: string;
+  name: string;
+  provider: string;
+  base_url: string;
+  model: string;
+  active: boolean;
+  api_key_set?: boolean;
+  api_key_masked?: string | null;
+};
+
+type ParserItem = {
+  id: string;
+  name: string;
+  source_code: string;
+  base_url: string;
+  country_code: string;
+  active: boolean;
+  token_set?: boolean;
+  token_masked?: string | null;
 };
 
 type Overview = {
-  services: Record<string, { status?: string; error?: string }>;
-  keys_configured: number;
-  keys_total: number;
   llm_ready: boolean;
   goszakup_ready: boolean;
 };
-
-type AuditItem = { ts: number; action: string; key: string; actor: string; masked?: string };
 
 type Props = {
   token: string;
@@ -57,40 +55,94 @@ type Props = {
   onBack: () => void;
 };
 
+type LlmForm = {
+  name: string;
+  provider: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  active: boolean;
+};
+
+type ParserForm = {
+  name: string;
+  source_code: string;
+  token: string;
+  base_url: string;
+  country_code: string;
+  active: boolean;
+};
+
+const emptyLlm = (): LlmForm => ({
+  name: "",
+  provider: "openai",
+  api_key: "",
+  base_url: "https://api.openai.com/v1",
+  model: "gpt-5.6-terra",
+  active: false,
+});
+
+const emptyParser = (): ParserForm => ({
+  name: "",
+  source_code: "",
+  token: "",
+  base_url: "https://ows.goszakup.gov.kz",
+  country_code: "KZ",
+  active: false,
+});
+
 function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+function rowSx() {
+  return {
+    display: "grid",
+    gridTemplateColumns: { xs: "1fr", sm: "minmax(140px, 1.2fr) minmax(120px, 1fr) 88px auto" },
+    gap: 1.5,
+    alignItems: "center",
+    px: 2,
+    py: 1.5,
+    bgcolor: "background.paper",
+    border: "1px solid",
+    borderColor: "divider",
+    borderRadius: 1,
+  };
+}
+
 export default function AdminPanel({ token, user, onBack }: Props) {
-  const [tab, setTab] = useState(0);
-  const [items, setItems] = useState<SecretItem[]>([]);
+  const [llms, setLlms] = useState<LlmItem[]>([]);
+  const [parsers, setParsers] = useState<ParserItem[]>([]);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [audit, setAudit] = useState<AuditItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-  const [edit, setEdit] = useState<SecretItem | null>(null);
-  const [value, setValue] = useState("");
-  const [showValue, setShowValue] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  const [llmDialog, setLlmDialog] = useState<"create" | LlmItem | null>(null);
+  const [llmForm, setLlmForm] = useState<LlmForm>(emptyLlm());
+  const [showKey, setShowKey] = useState(false);
+
+  const [parserDialog, setParserDialog] = useState<"create" | ParserItem | null>(null);
+  const [parserForm, setParserForm] = useState<ParserForm>(emptyParser());
+  const [showToken, setShowToken] = useState(false);
+
+  const [expandedLlm, setExpandedLlm] = useState(true);
+  const [expandedParsers, setExpandedParsers] = useState(true);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [sRes, oRes, aRes] = await Promise.all([
-        fetch(`${API}/admin/secrets`, { headers: authHeaders(token) }),
+      const [iRes, oRes] = await Promise.all([
+        fetch(`${API}/admin/integrations`, { headers: authHeaders(token) }),
         fetch(`${API}/admin/overview`, { headers: authHeaders(token) }),
-        fetch(`${API}/admin/audit?limit=40`, { headers: authHeaders(token) }),
       ]);
-      if (sRes.status === 403) throw new Error("Нужна роль admin");
-      if (!sRes.ok) throw new Error("Не удалось загрузить ключи");
-      const sJson = await sRes.json();
-      setItems(sJson.items || []);
+      if (iRes.status === 403) throw new Error("Нужна роль admin");
+      if (!iRes.ok) throw new Error("Не удалось загрузить интеграции");
+      const iJson = await iRes.json();
+      setLlms(iJson.llms || []);
+      setParsers(iJson.parsers || []);
       if (oRes.ok) setOverview(await oRes.json());
-      if (aRes.ok) {
-        const aJson = await aRes.json();
-        setAudit(aJson.items || []);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка загрузки");
     }
@@ -100,23 +152,80 @@ export default function AdminPanel({ token, user, onBack }: Props) {
     load();
   }, [load]);
 
-  async function saveKey() {
-    if (!edit || !value.trim()) return;
+  function openCreateLlm() {
+    setLlmForm(emptyLlm());
+    setShowKey(false);
+    setTestResult(null);
+    setLlmDialog("create");
+  }
+
+  function openEditLlm(item: LlmItem) {
+    setLlmForm({
+      name: item.name,
+      provider: item.provider,
+      api_key: "",
+      base_url: item.base_url,
+      model: item.model,
+      active: item.active,
+    });
+    setShowKey(false);
+    setTestResult(null);
+    setLlmDialog(item);
+  }
+
+  function openCreateParser() {
+    setParserForm(emptyParser());
+    setShowToken(false);
+    setParserDialog("create");
+  }
+
+  function openEditParser(item: ParserItem) {
+    setParserForm({
+      name: item.name,
+      source_code: item.source_code,
+      token: "",
+      base_url: item.base_url,
+      country_code: item.country_code,
+      active: item.active,
+    });
+    setShowToken(false);
+    setParserDialog(item);
+  }
+
+  async function saveLlm() {
+    if (!llmForm.name.trim()) {
+      setError("Укажите название LLM");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/admin/secrets/${edit.key}`, {
-        method: "PUT",
-        headers: authHeaders(token),
-        body: JSON.stringify({ value: value.trim() }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.detail || "Ошибка сохранения");
+      const isCreate = llmDialog === "create";
+      const url = isCreate
+        ? `${API}/admin/integrations/llms`
+        : `${API}/admin/integrations/llms/${(llmDialog as LlmItem).id}`;
+      const body: Record<string, unknown> = {
+        name: llmForm.name.trim(),
+        provider: llmForm.provider.trim(),
+        base_url: llmForm.base_url.trim(),
+        model: llmForm.model.trim(),
+        active: llmForm.active,
+      };
+      if (llmForm.api_key.trim()) body.api_key = llmForm.api_key.trim();
+      if (isCreate && !llmForm.api_key.trim()) {
+        setError("Для новой LLM нужен API key");
+        setBusy(false);
+        return;
       }
-      setOkMsg(`${edit.key} сохранён — сервисы подхватят без перезапуска`);
-      setEdit(null);
-      setValue("");
+      const res = await fetch(url, {
+        method: isCreate ? "POST" : "PUT",
+        headers: authHeaders(token),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Ошибка сохранения LLM");
+      setOkMsg(isCreate ? "LLM добавлена" : "LLM обновлена");
+      setLlmDialog(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка");
@@ -125,16 +234,88 @@ export default function AdminPanel({ token, user, onBack }: Props) {
     }
   }
 
-  async function clearKey(key: string) {
-    if (!confirm(`Удалить runtime-значение ${key}? Останется только .env (если есть).`)) return;
+  async function saveParser() {
+    if (!parserForm.name.trim()) {
+      setError("Укажите название сервиса");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const isCreate = parserDialog === "create";
+      const url = isCreate
+        ? `${API}/admin/integrations/parsers`
+        : `${API}/admin/integrations/parsers/${(parserDialog as ParserItem).id}`;
+      const body: Record<string, unknown> = {
+        name: parserForm.name.trim(),
+        source_code: parserForm.source_code.trim() || undefined,
+        base_url: parserForm.base_url.trim(),
+        country_code: parserForm.country_code.trim(),
+        active: parserForm.active,
+      };
+      if (parserForm.token.trim()) body.token = parserForm.token.trim();
+      const res = await fetch(url, {
+        method: isCreate ? "POST" : "PUT",
+        headers: authHeaders(token),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Ошибка сохранения парсера");
+      setOkMsg(isCreate ? "Сервис добавлен" : "Сервис обновлён");
+      setParserDialog(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateLlm(id: string) {
     setBusy(true);
     try {
-      const res = await fetch(`${API}/admin/secrets/${key}`, {
+      const res = await fetch(`${API}/admin/integrations/llms/${id}/activate`, {
+        method: "POST",
+        headers: authHeaders(token),
+      });
+      if (!res.ok) throw new Error("Не удалось активировать");
+      setOkMsg("LLM активирована");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateParser(id: string) {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/admin/integrations/parsers/${id}/activate`, {
+        method: "POST",
+        headers: authHeaders(token),
+      });
+      if (!res.ok) throw new Error("Не удалось активировать");
+      setOkMsg("Парсер активирован");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeLlm(id: string) {
+    if (!confirm("Удалить эту LLM?")) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/admin/integrations/llms/${id}`, {
         method: "DELETE",
         headers: authHeaders(token),
       });
-      if (!res.ok) throw new Error("Не удалось удалить");
-      setOkMsg(`${key} очищен`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Не удалось удалить");
+      setOkMsg("LLM удалена");
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка");
@@ -143,16 +324,35 @@ export default function AdminPanel({ token, user, onBack }: Props) {
     }
   }
 
-  async function testLlm() {
+  async function removeParser(id: string) {
+    if (!confirm("Удалить этот сервис?")) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/admin/integrations/parsers/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Не удалось удалить");
+      setOkMsg("Сервис удалён");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testLlm(id: string) {
     setBusy(true);
     setTestResult(null);
     try {
-      const res = await fetch(`${API}/admin/secrets/LLM_API_KEY/test`, {
+      const res = await fetch(`${API}/admin/integrations/llms/${id}/test`, {
         method: "POST",
         headers: authHeaders(token),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Тест не прошёл");
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Тест не прошёл");
       setTestResult(
         data.ok
           ? `OK · ${data.model} · ${typeof data.preview === "string" ? data.preview : JSON.stringify(data.preview)}`
@@ -165,15 +365,15 @@ export default function AdminPanel({ token, user, onBack }: Props) {
     }
   }
 
-  async function runIngest() {
+  async function runIngest(sourceCode: string) {
     setBusy(true);
     try {
-      const res = await fetch(`${API}/ingest/sources/KZ_GOSZAKUP_OWS_V3/run`, {
+      const res = await fetch(`${API}/ingest/sources/${sourceCode}/run`, {
         method: "POST",
         headers: authHeaders(token),
       });
       const data = await res.json();
-      setOkMsg(`Ingest: ${data.status}${data.task_id ? ` · task ${data.task_id}` : ""}`);
+      setOkMsg(`Crawl: ${data.status}${data.task_id ? ` · ${data.task_id}` : ""}`);
     } catch {
       setError("Не удалось поставить crawl в очередь");
     } finally {
@@ -181,15 +381,12 @@ export default function AdminPanel({ token, user, onBack }: Props) {
     }
   }
 
-  const llmKeys = items.filter((i) => i.category === "llm");
-  const ingestKeys = items.filter((i) => i.category === "ingestion");
-
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <Box sx={{ px: 3, py: 1.5, borderBottom: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
         <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
-          <Typography variant="h5">Админка · ключи</Typography>
-          <Chip size="small" color="secondary" label={`${user.name} · admin`} />
+          <Typography variant="h5">Кабинет администратора</Typography>
+          <Chip size="small" color="secondary" label={user.name} />
           <Box sx={{ flex: 1 }} />
           <Button size="small" onClick={onBack}>
             ← К карте
@@ -200,7 +397,7 @@ export default function AdminPanel({ token, user, onBack }: Props) {
         </Stack>
       </Box>
 
-      <Box sx={{ p: 3, maxWidth: 1100, mx: "auto" }}>
+      <Box sx={{ p: 3, maxWidth: 960, mx: "auto" }}>
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -211,231 +408,285 @@ export default function AdminPanel({ token, user, onBack }: Props) {
             {okMsg}
           </Alert>
         )}
+        {testResult && (
+          <Alert
+            severity={testResult.startsWith("OK") ? "success" : "warning"}
+            sx={{ mb: 2 }}
+            onClose={() => setTestResult(null)}
+          >
+            {testResult}
+          </Alert>
+        )}
 
         {overview && (
-          <Stack direction="row" gap={1} flexWrap="wrap" mb={3}>
+          <Stack direction="row" gap={1} flexWrap="wrap" mb={2}>
             <Chip
+              size="small"
               color={overview.llm_ready ? "success" : "default"}
-              label={overview.llm_ready ? "LLM ключ есть" : "LLM ключ пуст"}
+              label={overview.llm_ready ? "LLM готов" : "LLM без ключа"}
             />
             <Chip
+              size="small"
               color={overview.goszakup_ready ? "success" : "default"}
-              label={overview.goszakup_ready ? "Goszakup токен есть" : "Goszakup offline"}
+              label={overview.goszakup_ready ? "Парсер готов" : "Парсер без токена"}
             />
-            <Chip label={`ключей: ${overview.keys_configured}/${overview.keys_total}`} />
-            {Object.entries(overview.services).map(([name, st]) => (
-              <Chip
-                key={name}
-                size="small"
-                variant="outlined"
-                color={st.status === "ok" ? "success" : "warning"}
-                label={`${name}: ${st.status || "down"}`}
-              />
-            ))}
           </Stack>
         )}
 
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
-          <Tab label="Ключи и конфиг" />
-          <Tab label="Аудит" />
-          <Tab label="Действия" />
-        </Tabs>
-
-        {tab === 0 && (
-          <Stack spacing={3}>
-            <SecretTable
-              title="LLM (объяснение Risk Score)"
-              items={llmKeys}
-              onEdit={(item) => {
-                setEdit(item);
-                setValue(item.secret ? "" : item.value || "");
-                setShowValue(false);
-                setTestResult(null);
-              }}
-              onClear={clearKey}
-            />
-            <SecretTable
-              title="Ingestion (goszakup)"
-              items={ingestKeys}
-              onEdit={(item) => {
-                setEdit(item);
-                setValue(item.secret ? "" : item.value || "");
-                setShowValue(false);
-              }}
-              onClear={clearKey}
-            />
-            <Typography variant="caption" color="text.secondary">
-              Runtime-значения пишутся в Redis + data/runtime/config.json и перекрывают .env без recreate контейнеров.
-              Секреты в UI маскируются (sk-ab…xyz1).
-            </Typography>
-          </Stack>
-        )}
-
-        {tab === 1 && (
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Время</TableCell>
-                <TableCell>Действие</TableCell>
-                <TableCell>Ключ</TableCell>
-                <TableCell>Кто</TableCell>
-                <TableCell>Маска</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {audit.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5}>
+        <Stack spacing={2}>
+          <Accordion expanded={expandedLlm} onChange={(_, v) => setExpandedLlm(v)} disableGutters>
+            <AccordionSummary expandIcon={<span>▾</span>}>
+              <Stack direction="row" alignItems="center" spacing={1.5} sx={{ width: "100%", pr: 1 }}>
+                <Typography variant="subtitle1" fontWeight={600}>
+                  LLM
+                </Typography>
+                <Chip size="small" label={llms.length} />
+                <Box sx={{ flex: 1 }} />
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openCreateLlm();
+                  }}
+                >
+                  + Добавить
+                </Button>
+              </Stack>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Stack spacing={1}>
+                {llms.map((item) => (
+                  <Box key={item.id} sx={rowSx()}>
+                    <Typography fontWeight={600}>{item.name}</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Пока пусто — сохраните или удалите ключ.
+                      {item.api_key_set ? item.api_key_masked : "токен не задан"}
                     </Typography>
-                  </TableCell>
-                </TableRow>
-              )}
-              {audit.map((a, i) => (
-                <TableRow key={`${a.ts}-${i}`}>
-                  <TableCell>{new Date(a.ts * 1000).toLocaleString("ru-RU")}</TableCell>
-                  <TableCell>{a.action}</TableCell>
-                  <TableCell>
-                    <code>{a.key}</code>
-                  </TableCell>
-                  <TableCell>{a.actor}</TableCell>
-                  <TableCell>{a.masked || "—"}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+                    <Chip
+                      size="small"
+                      color={item.active ? "success" : "default"}
+                      label={item.active ? "active" : "выкл"}
+                      variant={item.active ? "filled" : "outlined"}
+                    />
+                    <Stack direction="row" gap={0.5} flexWrap="wrap" justifyContent={{ sm: "flex-end" }}>
+                      {!item.active && (
+                        <Button size="small" onClick={() => activateLlm(item.id)} disabled={busy}>
+                          Активировать
+                        </Button>
+                      )}
+                      <Button size="small" variant="outlined" onClick={() => openEditLlm(item)}>
+                        Изменить
+                      </Button>
+                      <Button size="small" onClick={() => testLlm(item.id)} disabled={busy || !item.api_key_set}>
+                        Тест
+                      </Button>
+                      <Button size="small" color="error" onClick={() => removeLlm(item.id)} disabled={busy || llms.length <= 1}>
+                        Удалить
+                      </Button>
+                    </Stack>
+                  </Box>
+                ))}
+                {llms.length === 0 && (
+                  <Typography variant="body2" color="text.secondary">
+                    Нет LLM — нажмите «+ Добавить».
+                  </Typography>
+                )}
+              </Stack>
+            </AccordionDetails>
+          </Accordion>
 
-        {tab === 2 && (
-          <Stack spacing={2} maxWidth={480}>
-            <Typography variant="body2" color="text.secondary">
-              Проверка LLM и запуск парсера после сохранения ключей.
-            </Typography>
-            <Button variant="contained" onClick={testLlm} disabled={busy}>
-              Проверить LLM_API_KEY
-            </Button>
-            {testResult && <Alert severity={testResult.startsWith("OK") ? "success" : "warning"}>{testResult}</Alert>}
-            <Divider />
-            <Button variant="outlined" onClick={runIngest} disabled={busy}>
-              Запустить crawl goszakup
-            </Button>
-          </Stack>
-        )}
+          <Accordion expanded={expandedParsers} onChange={(_, v) => setExpandedParsers(v)} disableGutters>
+            <AccordionSummary expandIcon={<span>▾</span>}>
+              <Stack direction="row" alignItems="center" spacing={1.5} sx={{ width: "100%", pr: 1 }}>
+                <Typography variant="subtitle1" fontWeight={600}>
+                  Сервисы парсинга
+                </Typography>
+                <Chip size="small" label={parsers.length} />
+                <Box sx={{ flex: 1 }} />
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openCreateParser();
+                  }}
+                >
+                  + Добавить
+                </Button>
+              </Stack>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Stack spacing={1}>
+                {parsers.map((item) => (
+                  <Box key={item.id} sx={rowSx()}>
+                    <Typography fontWeight={600}>{item.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {item.token_set ? item.token_masked : "токен не задан"}
+                    </Typography>
+                    <Chip
+                      size="small"
+                      color={item.active ? "success" : "default"}
+                      label={item.active ? "active" : "выкл"}
+                      variant={item.active ? "filled" : "outlined"}
+                    />
+                    <Stack direction="row" gap={0.5} flexWrap="wrap" justifyContent={{ sm: "flex-end" }}>
+                      {!item.active && (
+                        <Button size="small" onClick={() => activateParser(item.id)} disabled={busy}>
+                          Активировать
+                        </Button>
+                      )}
+                      <Button size="small" variant="outlined" onClick={() => openEditParser(item)}>
+                        Изменить
+                      </Button>
+                      <Button size="small" onClick={() => runIngest(item.source_code)} disabled={busy}>
+                        Crawl
+                      </Button>
+                      <Button
+                        size="small"
+                        color="error"
+                        onClick={() => removeParser(item.id)}
+                        disabled={busy || parsers.length <= 1}
+                      >
+                        Удалить
+                      </Button>
+                    </Stack>
+                  </Box>
+                ))}
+                {parsers.length === 0 && (
+                  <Typography variant="body2" color="text.secondary">
+                    Нет сервисов — нажмите «+ Добавить».
+                  </Typography>
+                )}
+              </Stack>
+            </AccordionDetails>
+          </Accordion>
+        </Stack>
       </Box>
 
-      <Dialog open={!!edit} onClose={() => setEdit(null)} fullWidth maxWidth="sm">
-        <DialogTitle>{edit?.label}</DialogTitle>
+      <Dialog open={!!llmDialog} onClose={() => setLlmDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>{llmDialog === "create" ? "Добавить LLM" : "Изменить LLM"}</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            {edit?.description}
-          </Typography>
-          {edit?.configured && edit.secret && (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              Сейчас: {edit.value_masked} · source={edit.source}
-            </Alert>
-          )}
-          <TextField
-            autoFocus
-            fullWidth
-            label={edit?.key}
-            placeholder={edit?.placeholder}
-            type={edit?.secret && !showValue ? "password" : "text"}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            helperText={edit?.secret ? "Вставьте новый ключ целиком — старый не показывается" : undefined}
-          />
-          {edit?.secret && (
-            <Button size="small" sx={{ mt: 1 }} onClick={() => setShowValue((v) => !v)}>
-              {showValue ? "Скрыть" : "Показать"}
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Название"
+              value={llmForm.name}
+              onChange={(e) => setLlmForm({ ...llmForm, name: e.target.value })}
+              fullWidth
+              required
+              placeholder="OpenAI / DeepSeek / OpenRouter"
+            />
+            <TextField
+              label="Токен (API key)"
+              type={showKey ? "text" : "password"}
+              value={llmForm.api_key}
+              onChange={(e) => setLlmForm({ ...llmForm, api_key: e.target.value })}
+              fullWidth
+              required={llmDialog === "create"}
+              placeholder="sk-..."
+              helperText={
+                llmDialog && llmDialog !== "create" && llmDialog.api_key_set
+                  ? `Сейчас: ${llmDialog.api_key_masked} — пусто = не менять`
+                  : undefined
+              }
+            />
+            <Button size="small" onClick={() => setShowKey((v) => !v)} sx={{ alignSelf: "flex-start" }}>
+              {showKey ? "Скрыть" : "Показать"} токен
             </Button>
-          )}
-          {edit?.key === "LLM_API_KEY" && (
-            <Box sx={{ mt: 2 }}>
-              <Button size="small" variant="outlined" onClick={testLlm} disabled={busy || !items.find((i) => i.key === "LLM_API_KEY")?.configured}>
-                Тест текущего сохранённого ключа
-              </Button>
-              {testResult && (
-                <Typography variant="caption" display="block" sx={{ mt: 1 }}>
-                  {testResult}
-                </Typography>
-              )}
-            </Box>
-          )}
+            <TextField
+              label="Модель"
+              value={llmForm.model}
+              onChange={(e) => setLlmForm({ ...llmForm, model: e.target.value })}
+              fullWidth
+              placeholder="gpt-5.6-terra"
+            />
+            <TextField
+              label="Base URL"
+              value={llmForm.base_url}
+              onChange={(e) => setLlmForm({ ...llmForm, base_url: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Provider"
+              value={llmForm.provider}
+              onChange={(e) => setLlmForm({ ...llmForm, provider: e.target.value })}
+              fullWidth
+            />
+            <FormControlLabel
+              control={<Switch checked={llmForm.active} onChange={(_, v) => setLlmForm({ ...llmForm, active: v })} />}
+              label="Сделать активной"
+            />
+          </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setEdit(null)}>Отмена</Button>
-          <Button variant="contained" onClick={saveKey} disabled={busy || !value.trim()}>
+          <Button onClick={() => setLlmDialog(null)}>Отмена</Button>
+          <Button variant="contained" onClick={saveLlm} disabled={busy}>
             Сохранить
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
-  );
-}
 
-function SecretTable({
-  title,
-  items,
-  onEdit,
-  onClear,
-}: {
-  title: string;
-  items: SecretItem[];
-  onEdit: (item: SecretItem) => void;
-  onClear: (key: string) => void;
-}) {
-  return (
-    <Box>
-      <Typography variant="subtitle1" gutterBottom>
-        {title}
-      </Typography>
-      <Table size="small" sx={{ bgcolor: "background.paper", borderRadius: 1 }}>
-        <TableHead>
-          <TableRow>
-            <TableCell>Параметр</TableCell>
-            <TableCell>Значение</TableCell>
-            <TableCell>Источник</TableCell>
-            <TableCell align="right">Действия</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {items.map((item) => (
-            <TableRow key={item.key}>
-              <TableCell>
-                <Typography variant="body2" fontWeight={600}>
-                  {item.label}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" component="div">
-                  <code>{item.key}</code>
-                </Typography>
-              </TableCell>
-              <TableCell>
-                {item.configured ? (
-                  <Chip size="small" color="success" label={item.value_masked || item.value || "set"} />
-                ) : (
-                  <Chip size="small" label="не задан" variant="outlined" />
-                )}
-              </TableCell>
-              <TableCell>
-                <Chip size="small" variant="outlined" label={item.source} />
-              </TableCell>
-              <TableCell align="right">
-                <Button size="small" onClick={() => onEdit(item)}>
-                  {item.configured ? "Изменить" : "Добавить"}
-                </Button>
-                {item.configured && item.source === "runtime" && (
-                  <IconButton size="small" onClick={() => onClear(item.key)} aria-label="clear" sx={{ ml: 0.5 }}>
-                    <Typography variant="caption" color="error">
-                      ✕
-                    </Typography>
-                  </IconButton>
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <Dialog open={!!parserDialog} onClose={() => setParserDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>{parserDialog === "create" ? "Добавить сервис" : "Изменить сервис"}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Название"
+              value={parserForm.name}
+              onChange={(e) => setParserForm({ ...parserForm, name: e.target.value })}
+              fullWidth
+              required
+              placeholder="Goszakup KZ"
+            />
+            <TextField
+              label="Токен"
+              type={showToken ? "text" : "password"}
+              value={parserForm.token}
+              onChange={(e) => setParserForm({ ...parserForm, token: e.target.value })}
+              fullWidth
+              helperText={
+                parserDialog && parserDialog !== "create" && parserDialog.token_set
+                  ? `Сейчас: ${parserDialog.token_masked} — пусто = не менять`
+                  : undefined
+              }
+            />
+            <Button size="small" onClick={() => setShowToken((v) => !v)} sx={{ alignSelf: "flex-start" }}>
+              {showToken ? "Скрыть" : "Показать"} токен
+            </Button>
+            <TextField
+              label="Source code"
+              value={parserForm.source_code}
+              onChange={(e) => setParserForm({ ...parserForm, source_code: e.target.value })}
+              fullWidth
+              placeholder="KZ_GOSZAKUP_OWS_V3"
+            />
+            <TextField
+              label="Base URL"
+              value={parserForm.base_url}
+              onChange={(e) => setParserForm({ ...parserForm, base_url: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Страна"
+              value={parserForm.country_code}
+              onChange={(e) => setParserForm({ ...parserForm, country_code: e.target.value })}
+              fullWidth
+              sx={{ maxWidth: 120 }}
+            />
+            <FormControlLabel
+              control={
+                <Switch checked={parserForm.active} onChange={(_, v) => setParserForm({ ...parserForm, active: v })} />
+              }
+              label="Сделать активным"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setParserDialog(null)}>Отмена</Button>
+          <Button variant="contained" onClick={saveParser} disabled={busy}>
+            Сохранить
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

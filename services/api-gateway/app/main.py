@@ -13,12 +13,22 @@ from pydantic import BaseModel, Field
 
 from ecotender_shared.runtime_secrets import (
     ALLOWED_KEYS,
+    activate_llm,
+    activate_parser,
     bootstrap_from_file,
+    create_llm,
+    create_parser,
     delete_config_value,
+    delete_llm,
+    delete_parser,
+    get_active_llm_raw,
     get_config_value,
+    get_integrations,
     list_audit,
     list_config,
     set_config_value,
+    update_llm,
+    update_parser,
 )
 
 app = FastAPI(title="EcoTender API Gateway", version="0.2.0")
@@ -142,6 +152,24 @@ class SecretUpsert(BaseModel):
     value: str = Field(min_length=1, max_length=4000)
 
 
+class LlmBody(BaseModel):
+    name: str | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    active: bool | None = None
+
+
+class ParserBody(BaseModel):
+    name: str | None = None
+    source_code: str | None = None
+    token: str | None = None
+    base_url: str | None = None
+    country_code: str | None = None
+    active: bool | None = None
+
+
 @app.post("/api/v1/auth/login")
 async def login(body: LoginBody) -> dict[str, Any]:
     email = body.email.strip().lower()
@@ -160,6 +188,158 @@ async def login(body: LoginBody) -> dict[str, Any]:
 async def me(request: Request) -> dict[str, Any]:
     data = _require_user(request)
     return {"email": data.get("sub"), "role": data.get("role"), "name": data.get("name")}
+
+
+# ── Integrations (LLM + parsers) ─────────────────────────────────────────────
+
+
+@app.get("/api/v1/admin/integrations")
+async def admin_integrations(request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    data = get_integrations(mask=True)
+    return {
+        **data,
+        "llm_count": len(data["llms"]),
+        "parser_count": len(data["parsers"]),
+    }
+
+
+@app.post("/api/v1/admin/integrations/llms")
+async def admin_create_llm(body: LlmBody, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    if not body.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        data = create_llm(body.model_dump(exclude_none=True), actor=str(admin.get("sub") or "admin"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+@app.put("/api/v1/admin/integrations/llms/{llm_id}")
+async def admin_update_llm(llm_id: str, body: LlmBody, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = update_llm(llm_id, body.model_dump(exclude_none=True), actor=str(admin.get("sub") or "admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"LLM not found: {llm_id}") from exc
+    return {"ok": True, **data}
+
+
+@app.delete("/api/v1/admin/integrations/llms/{llm_id}")
+async def admin_delete_llm(llm_id: str, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = delete_llm(llm_id, actor=str(admin.get("sub") or "admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+@app.post("/api/v1/admin/integrations/llms/{llm_id}/activate")
+async def admin_activate_llm(llm_id: str, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = activate_llm(llm_id, actor=str(admin.get("sub") or "admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+@app.post("/api/v1/admin/integrations/llms/{llm_id}/test")
+async def admin_test_llm_by_id(llm_id: str, request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    from ecotender_shared.runtime_secrets import INTEGRATIONS_KEY, _ensure_integrations, _read_raw_store
+
+    raw = _ensure_integrations(_read_raw_store())
+    llm = next((x for x in raw[INTEGRATIONS_KEY]["llms"] if x["id"] == llm_id), None)
+    if not llm:
+        raise HTTPException(status_code=404, detail="LLM not found")
+    api_key = llm.get("api_key") or ""
+    base_url = (llm.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+    model = llm.get("model") or "gpt-5.6-terra"
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key пуст — сначала сохраните ключ")
+    return await _ping_llm(api_key=api_key, base_url=base_url, model=model)
+
+
+@app.post("/api/v1/admin/integrations/parsers")
+async def admin_create_parser(body: ParserBody, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    if not body.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        data = create_parser(body.model_dump(exclude_none=True), actor=str(admin.get("sub") or "admin"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+@app.put("/api/v1/admin/integrations/parsers/{parser_id}")
+async def admin_update_parser(parser_id: str, body: ParserBody, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = update_parser(parser_id, body.model_dump(exclude_none=True), actor=str(admin.get("sub") or "admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Parser not found: {parser_id}") from exc
+    return {"ok": True, **data}
+
+
+@app.delete("/api/v1/admin/integrations/parsers/{parser_id}")
+async def admin_delete_parser(parser_id: str, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = delete_parser(parser_id, actor=str(admin.get("sub") or "admin"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+@app.post("/api/v1/admin/integrations/parsers/{parser_id}/activate")
+async def admin_activate_parser(parser_id: str, request: Request) -> dict[str, Any]:
+    admin = _require_admin(request)
+    try:
+        data = activate_parser(parser_id, actor=str(admin.get("sub") or "admin"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, **data}
+
+
+async def _ping_llm(*, api_key: str, base_url: str, model: str) -> dict[str, Any]:
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Reply with OK"}],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            ok = resp.status_code < 400
+            body: dict[str, Any] = {}
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                body = {"raw": resp.text[:300]}
+            return {
+                "ok": ok,
+                "status_code": resp.status_code,
+                "model": model,
+                "base_url": base_url,
+                "preview": (
+                    (body.get("choices") or [{}])[0].get("message", {}).get("content")
+                    if ok
+                    else body.get("error") or body
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/admin/secrets")
@@ -196,50 +376,20 @@ async def admin_secrets_audit(request: Request, limit: int = 50) -> dict[str, An
 @app.post("/api/v1/admin/secrets/LLM_API_KEY/test")
 async def admin_test_llm(request: Request) -> dict[str, Any]:
     _require_admin(request)
-    api_key = get_config_value("LLM_API_KEY")
-    base_url = (get_config_value("LLM_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-    model = get_config_value("LLM_MODEL", "gpt-5.6-terra") or "gpt-5.6-terra"
+    llm = get_active_llm_raw()
+    api_key = (llm or {}).get("api_key") or get_config_value("LLM_API_KEY")
+    base_url = ((llm or {}).get("base_url") or get_config_value("LLM_BASE_URL", "https://api.openai.com/v1") or "").rstrip(
+        "/"
+    )
+    model = (llm or {}).get("model") or get_config_value("LLM_MODEL", "gpt-5.6-terra") or "gpt-5.6-terra"
     if not api_key:
         raise HTTPException(status_code=400, detail="LLM_API_KEY is empty — save a key first")
-
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "max_tokens": 16,
-        "messages": [{"role": "user", "content": "Reply with OK"}],
-    }
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            ok = resp.status_code < 400
-            body: dict[str, Any] = {}
-            try:
-                body = resp.json()
-            except Exception:  # noqa: BLE001
-                body = {"raw": resp.text[:300]}
-            return {
-                "ok": ok,
-                "status_code": resp.status_code,
-                "model": model,
-                "base_url": base_url,
-                "preview": (
-                    (body.get("choices") or [{}])[0].get("message", {}).get("content")
-                    if ok
-                    else body.get("error") or body
-                ),
-            }
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+    return await _ping_llm(api_key=api_key, base_url=base_url, model=model)
 
 @app.get("/api/v1/admin/overview")
 async def admin_overview(request: Request) -> dict[str, Any]:
     _require_admin(request)
-    secrets = list_config()
+    integ = get_integrations(mask=True)
     statuses: dict[str, Any] = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
         for name, base in SERVICES.items():
@@ -250,10 +400,12 @@ async def admin_overview(request: Request) -> dict[str, Any]:
                 statuses[name] = {"status": "down", "error": str(exc)}
     return {
         "services": statuses,
-        "keys_configured": sum(1 for s in secrets if s.get("configured")),
-        "keys_total": len(secrets),
-        "llm_ready": any(s["key"] == "LLM_API_KEY" and s.get("configured") for s in secrets),
-        "goszakup_ready": any(s["key"] == "GOSZAKUP_TOKEN" and s.get("configured") for s in secrets),
+        "llm_count": len(integ["llms"]),
+        "parser_count": len(integ["parsers"]),
+        "keys_configured": sum(1 for s in list_config() if s.get("configured")),
+        "keys_total": len(list_config()),
+        "llm_ready": any(x.get("api_key_set") for x in integ["llms"]),
+        "goszakup_ready": any(x.get("token_set") for x in integ["parsers"]),
     }
 
 
@@ -273,24 +425,31 @@ async def ready() -> dict[str, Any]:
 
 @app.get("/api/v1/ingest/sources")
 async def ingest_sources() -> dict[str, Any]:
-    return {
-        "sources": [
+    integ = get_integrations(mask=True)
+    sources = []
+    for p in integ.get("parsers") or []:
+        sources.append(
             {
-                "code": "KZ_GOSZAKUP_OWS_V3",
-                "country_code": "KZ",
-                "name": "goszakup.gov.kz OWS v3",
-                "docs": "https://goszakup.gov.kz/ru/developer/ows_v3",
-                "auth": "Bearer token via GOSZAKUP_TOKEN (admin panel or .env)",
-            },
+                "code": p.get("source_code"),
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "country_code": p.get("country_code"),
+                "active": p.get("active"),
+                "token_set": p.get("token_set"),
+                "auth": "Bearer token via admin integrations",
+            }
+        )
+    if not any(s.get("code") == "FIXTURES_CASPIAN" for s in sources):
+        sources.append(
             {
                 "code": "FIXTURES_CASPIAN",
                 "country_code": "KZ",
                 "name": "Local JSON fixtures",
                 "docs": None,
                 "auth": None,
-            },
-        ]
-    }
+            }
+        )
+    return {"sources": sources}
 
 
 @app.post("/api/v1/ingest/sources/{source_code}/run")

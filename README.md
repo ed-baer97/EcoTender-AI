@@ -11,6 +11,7 @@
 ```bash
 cp .env.example .env
 docker compose up -d --build
+python scripts/smoke_check.py
 ```
 | Сервис        | URL                    |
 |---------------|------------------------|
@@ -20,8 +21,8 @@ docker compose up -d --build
 | Flower        | http://localhost:5555  |
 | MinIO         | http://localhost:9101  |
 
-**Ключи API** — через админку (без правки `.env` и recreate):  
-войти как `admin@ecotender.kz` / `admin123` → кнопка **Админка** → LLM / Goszakup.
+**Ключи API** — через кабинет администратора (без правки `.env` и recreate):  
+войти как `admin@ecotender.kz` / `admin123` → **Кабинет администратора** → LLM / парсеры.
 
 ## Документация
 

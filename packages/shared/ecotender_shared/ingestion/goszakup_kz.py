@@ -50,14 +50,17 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
         sample_path: str | Path | None = None,
         prefer_caspian: bool = True,
     ) -> None:
-        from ecotender_shared.runtime_secrets import get_config_value
+        from ecotender_shared.runtime_secrets import get_active_parser_raw, get_config_value
 
+        active = get_active_parser_raw("KZ_GOSZAKUP_OWS_V3") or get_active_parser_raw()
         self.token = (
             token
+            or (active or {}).get("token")
             or get_config_value("GOSZAKUP_TOKEN")
             or os.getenv("GOSZAKUP_TOKEN")
             or os.getenv("GOSZAKUP_API_TOKEN")
         )
+        self._runtime_base = (active or {}).get("base_url") if active else None
         self.limit = limit
         self.max_pages = max_pages
         self.prefer_caspian = prefer_caspian
@@ -75,7 +78,9 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
         from ecotender_shared.runtime_secrets import get_config_value
 
         return (
-            get_config_value("GOSZAKUP_BASE_URL", BASE_URL_DEFAULT) or BASE_URL_DEFAULT
+            self._runtime_base
+            or get_config_value("GOSZAKUP_BASE_URL", BASE_URL_DEFAULT)
+            or BASE_URL_DEFAULT
         ).rstrip("/")
 
     def _headers(self) -> dict[str, str]:

@@ -221,7 +221,6 @@ export default function App() {
     setUser(data.user);
     setLoginOpen(false);
     setError(null);
-    if (data.user?.role === "admin") setView("admin");
   }
 
   function logout() {
@@ -270,7 +269,7 @@ export default function App() {
           />
           {user?.role === "admin" && (
             <Button size="small" variant="contained" color="secondary" onClick={() => setView("admin")}>
-              Админка
+              Кабинет администратора
             </Button>
           )}
           {user ? (

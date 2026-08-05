@@ -6,12 +6,13 @@ Caspian Hackathon 2026 · фокус: **Казахстан / Каспий**
 
 ```bash
 docker compose up -d
-# опционально live explain:
-# LLM_API_KEY=sk-... в .env → docker compose up -d --force-recreate risk-engine
+python scripts/smoke_check.py
+# опционально live explain: ключ в кабинете администратора (LLM) или LLM_API_KEY в .env
 ```
 
 Открыть: **http://localhost:5173**
 
+Smoke проверяет: gateway `/health`, `/api/v1/ready`, login admin, `/auth/me`, risk по `KZ-ECO-1001`.
 ---
 
 ## Сценарий (120 секунд)
