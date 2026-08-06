@@ -9,30 +9,85 @@ from typing import Any
 from uuid import uuid4
 
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Tender
 
 
 def heuristic_risk(row: dict[str, Any]) -> tuple[float, str]:
+    """Keep in sync with risk-engine heuristic_proba for list/map chips."""
+    extras = row.get("extras") or {}
+    gos = extras.get("goszakup") or {}
     amount = float(row.get("amount") or 0)
-    market = float(row.get("market_amount_est") or amount or 1)
-    over = amount / market if market else 1.0
-    parts = int(row.get("participants_count") or 0)
+    market_raw = row.get("market_amount_est")
+    market = float(market_raw) if market_raw not in (None, "", 0, 0.0) else None
+    parts_raw = row.get("participants_count")
+    parts = int(parts_raw) if parts_raw not in (None, "") else -1
     wr = float(row.get("contractor_win_rate") or 0)
     wins = int(row.get("contractor_wins_2y") or 0)
     amend = float(row.get("amendment_amount_ratio") or 0)
-    score = 0.0
-    score += 0.25 * (1.0 if over > 1.4 else max(0.0, (over - 1.0) / 0.4))
-    score += 0.20 * (1.0 if parts <= 1 else 0.0)
-    score += 0.15 * (1.0 if wr > 0.7 and wins >= 5 else wr * 0.5)
-    score += 0.15 * min(1.0, amend / 0.25 if amend else 0.0)
-    score += 0.10 * (1.0 if 0 < parts <= 2 else 0.0)
-    score += 0.15 * min(1.0, max(0.0, over - 1.0))
-    if row.get("procurement_method") == "single_source":
-        score = max(score, 0.55)
-    s = round(min(1.0, score) * 100, 1)
+    method = str(row.get("procurement_method") or "")
+    eco = str(row.get("eco_category") or "other")
+
+    score = 0.08
+    if market and market > 0:
+        over = amount / market
+        score += 0.22 * (1.0 if over > 1.4 else max(0.0, (over - 1.0) / 0.4))
+        score += 0.12 * min(1.0, max(0.0, over - 1.0))
+    if parts == 1:
+        score += 0.22
+    elif 0 < parts <= 2:
+        score += 0.12
+    elif parts < 0:
+        score += 0.06
+    if method == "single_source":
+        score += 0.28
+    elif method == "request_price":
+        score += 0.10
+    if wr > 0.7 and wins >= 5:
+        score += 0.18
+    else:
+        score += 0.08 * wr
+    score += 0.14 * min(1.0, amend / 0.25 if amend else 0.0)
+    if amount >= 1_000_000_000:
+        score += 0.18
+    elif amount >= 100_000_000:
+        score += 0.12
+    elif amount >= 10_000_000:
+        score += 0.08
+    elif amount >= 1_000_000:
+        score += 0.04
+    elif amount > 0 and amount < 100_000:
+        score -= 0.02
+    if eco in {
+        "oil_spill_response",
+        "dredging",
+        "reclamation",
+        "shore_protection",
+        "coastal_cleanup",
+    }:
+        score += 0.10
+    if eco == "oil_spill_response":
+        score += 0.06
+    if row.get("region_code") in ("KZ-MAN", "KZ-ATY") and eco in {
+        "oil_spill_response",
+        "dredging",
+        "reclamation",
+        "shore_protection",
+        "coastal_cleanup",
+    }:
+        score += 0.05
+    if len(gos.get("lots") or []) >= 3:
+        score += 0.05
+    if len(gos.get("documents") or []) == 0:
+        score += 0.05
+    if len(gos.get("protocols") or []) == 0:
+        score += 0.04
+    if len(gos.get("contracts") or []) > 0:
+        score += 0.05
+
+    s = round(min(1.0, max(0.0, score)) * 100, 1)
     band = "critical" if s >= 80 else "high" if s >= 60 else "medium" if s >= 30 else "low"
     return s, band
 
@@ -114,6 +169,23 @@ async def upsert_tender_row(session: AsyncSession, payload: dict[str, Any]) -> T
     await session.commit()
     await session.refresh(row)
     return row
+
+
+async def delete_by_source(session: AsyncSession, source_code: str) -> int:
+    result = await session.execute(delete(Tender).where(Tender.source_code == source_code))
+    await session.commit()
+    return int(result.rowcount or 0)
+
+
+async def delete_synthetic(session: AsyncSession) -> int:
+    """Remove demo fixtures (FIXTURES_CASPIAN + KZ-ECO-* ids)."""
+    result = await session.execute(
+        delete(Tender).where(
+            (Tender.source_code == "FIXTURES_CASPIAN") | Tender.external_id.like("KZ-ECO-%")
+        )
+    )
+    await session.commit()
+    return int(result.rowcount or 0)
 
 
 async def seed_from_fixtures(session: AsyncSession) -> int:

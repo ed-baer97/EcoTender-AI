@@ -8,16 +8,21 @@ from typing import Any
 import httpx
 
 from app.workers.celery_app import celery_app
+from app.workers.raw_store import store_bytes
 
 
 def _adapter(source_code: str):
-    if source_code in ("KZ_GOSZAKUP_OWS_V3", "KZ_GOSZAKUP", "goszakup"):
-        from ecotender_shared.ingestion.goszakup_kz import KazakhstanGoszakupAdapter
+    if source_code in (
+        "KZ_GOSZAKUP_OWS_V3",
+        "KZ_GOSZAKUP",
+        "goszakup",
+        "KZ_GOSZAKUP_PLAYWRIGHT",
+        "goszakup_playwright",
+        "playwright",
+    ):
+        from ecotender_shared.ingestion.goszakup_factory import resolve_goszakup_adapter
 
-        return KazakhstanGoszakupAdapter(
-            limit=int(os.getenv("GOSZAKUP_PAGE_LIMIT", "50")),
-            max_pages=int(os.getenv("GOSZAKUP_MAX_PAGES", "3")),
-        )
+        return resolve_goszakup_adapter(source_code)
     if source_code in ("FIXTURES_CASPIAN", "fixtures"):
         from pathlib import Path
 
@@ -38,6 +43,85 @@ def _upsert_tender(normalized: dict[str, Any]) -> dict[str, Any]:
         return resp.json()
 
 
+def _estimate_market(normalized: dict[str, Any]) -> float | None:
+    base = os.getenv("MARKET_SERVICE_URL", "http://market-service:8002").rstrip("/")
+    extras = normalized.get("extras") or {}
+    gos = extras.get("goszakup") or {}
+    work_items = []
+    for lot in gos.get("lots") or []:
+        name = str(lot.get("name") or "").strip()
+        if not name:
+            continue
+        work_items.append({"name": name, "unit": "item", "quantity": 1})
+    if not work_items:
+        title = str(normalized.get("title") or "").strip()
+        if title:
+            work_items.append({"name": title, "unit": "item", "quantity": 1})
+    if not work_items:
+        return None
+    payload = {"work_items": work_items[:20], "region_code": normalized.get("region_code")}
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.post(f"{base}/v1/market/estimate", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        return float(data.get("estimated_total") or 0) or None
+    except Exception:
+        return None
+
+
+def _persist_raw_assets(normalized: dict[str, Any]) -> dict[str, Any]:
+    extras = normalized.get("extras") or {}
+    gos = extras.get("goszakup") or {}
+    raw_assets = gos.pop("raw_assets", []) or []
+    if not raw_assets:
+        return normalized
+    stored_assets: list[dict[str, Any]] = []
+    for asset in raw_assets:
+        try:
+            body = asset.get("body_b64")
+            if not body:
+                continue
+            import base64
+
+            blob = base64.b64decode(body)
+            stored = store_bytes(
+                blob,
+                object_prefix=f"goszakup/{normalized.get('external_id')}/{asset.get('kind') or 'raw'}",
+                filename=str(asset.get("name") or "artifact.bin"),
+                content_type=str(asset.get("content_type") or "application/octet-stream"),
+            )
+            stored_assets.append(
+                stored.to_meta(
+                    kind=asset.get("kind"),
+                    source_url=asset.get("source_url"),
+                    tab_name=asset.get("tab_name"),
+                )
+            )
+        except Exception as exc:
+            stored_assets.append(
+                {
+                    "kind": asset.get("kind"),
+                    "source_url": asset.get("source_url"),
+                    "tab_name": asset.get("tab_name"),
+                    "error": str(exc),
+                }
+            )
+    for doc in gos.get("documents") or []:
+        url = doc.get("url")
+        meta = next((x for x in stored_assets if x.get("source_url") == url and x.get("kind") == "document"), None)
+        if meta:
+            doc["object_key"] = meta.get("object_key")
+            doc["bucket"] = meta.get("bucket")
+            doc["sha256"] = meta.get("sha256")
+            doc["content_type"] = meta.get("content_type", doc.get("content_type"))
+            doc["size"] = meta.get("size", doc.get("size"))
+    gos["stored_assets"] = stored_assets
+    extras["goszakup"] = gos
+    normalized["extras"] = extras
+    return normalized
+
+
 @celery_app.task(name="app.workers.tasks.ping")
 def ping() -> str:
     return "pong"
@@ -47,11 +131,27 @@ def ping() -> str:
 def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any]:
     """Discover → fetch → normalize → upsert into tender-service."""
     adapter = _adapter(source_code)
-    mode = "live" if getattr(adapter, "token", None) else "sample_offline"
+    if getattr(adapter, "mode", None) == "playwright_stub":
+        mode = "playwright_stub"
+    elif getattr(adapter, "token", None):
+        mode = "live_api"
+    else:
+        mode = "sample_offline"
     pages_ok = 0
     pages_fail = 0
     upserted: list[str] = []
     errors: list[str] = []
+    self.update_state(
+        state="PROGRESS",
+        meta={
+            "source_code": source_code,
+            "stage": "discover",
+            "current": 0,
+            "total": 0,
+            "percent": 1,
+            "message": "Поиск тендеров на портале",
+        },
+    )
 
     try:
         refs = list(adapter.discover_sync()) if hasattr(adapter, "discover_sync") else []
@@ -76,7 +176,20 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
             "pages_fail": 0,
         }
 
-    for ref in refs:
+    total_refs = len(refs)
+    self.update_state(
+        state="PROGRESS",
+        meta={
+            "source_code": source_code,
+            "stage": "process",
+            "current": 0,
+            "total": total_refs,
+            "percent": 5 if total_refs else 100,
+            "message": f"Найдено тендеров: {total_refs}",
+        },
+    )
+
+    for idx, ref in enumerate(refs, start=1):
         try:
             raw = adapter.fetch_sync(ref) if hasattr(adapter, "fetch_sync") else None
             if raw is None:
@@ -85,18 +198,40 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
                 raw = asyncio.run(adapter.fetch(ref))
             normalized = adapter.normalize(raw)
             payload = normalized.model_dump(mode="json")
+            payload = _persist_raw_assets(payload)
+            market_est = _estimate_market(payload)
+            if market_est is not None and not payload.get("market_amount_est"):
+                payload["market_amount_est"] = market_est
             result = _upsert_tender(payload)
             upserted.append(result.get("external_id") or normalized.external_id)
             pages_ok += 1
         except Exception as exc:  # noqa: BLE001
             pages_fail += 1
             errors.append(f"{ref}: {exc}")
+        percent = 5 + int((idx / max(total_refs, 1)) * 90)
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "source_code": source_code,
+                "stage": "process",
+                "current": idx,
+                "total": total_refs,
+                "pages_ok": pages_ok,
+                "pages_fail": pages_fail,
+                "percent": min(percent, 95),
+                "message": f"Обработано {idx}/{total_refs}",
+            },
+        )
 
-    return {
+    result = {
         "source_code": source_code,
         "status": "ok" if pages_ok else "empty_or_failed",
         "mode": mode,
-        "docs": "https://goszakup.gov.kz/ru/developer/ows_v3",
+        "docs": (
+            "https://goszakup.gov.kz/ru/search/announce"
+            if mode == "playwright_stub"
+            else "https://goszakup.gov.kz/ru/developer/ows_v3"
+        ),
         "discovered": len(refs),
         "pages_ok": pages_ok,
         "pages_fail": pages_fail,
@@ -104,3 +239,19 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
         "errors": errors[:10],
         "task_id": getattr(self.request, "id", None),
     }
+    self.update_state(
+        state="SUCCESS",
+        meta={
+            "source_code": source_code,
+            "stage": "done",
+            "current": total_refs,
+            "total": total_refs,
+            "pages_ok": pages_ok,
+            "pages_fail": pages_fail,
+            "percent": 100,
+            "message": f"Готово: {pages_ok} ok / {pages_fail} fail",
+            "upserted": upserted[:50],
+            "errors": errors[:10],
+        },
+    )
+    return result

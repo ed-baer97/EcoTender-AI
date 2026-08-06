@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_session
 from app.models import Tender
-from app.repository import seed_from_fixtures, upsert_tender_row
+from app.repository import delete_by_source, delete_synthetic, seed_from_fixtures, upsert_tender_row
 
 app = FastAPI(title="EcoTender Tender Service", version="0.2.0")
 
@@ -50,6 +51,8 @@ class UpsertBody(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
+    if os.getenv("SEED_FIXTURES", "").lower() not in ("1", "true", "yes"):
+        return
     async with SessionLocal() as session:
         count = await session.scalar(select(func.count()).select_from(Tender))
         if not count:
@@ -99,6 +102,15 @@ async def list_tenders(
     }
 
 
+@app.delete("/v1/tenders/by-source/{source_code}")
+async def purge_by_source(source_code: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    if source_code == "synthetic":
+        deleted = await delete_synthetic(session)
+    else:
+        deleted = await delete_by_source(session, source_code)
+    return {"deleted": deleted, "source_code": source_code}
+
+
 @app.get("/v1/tenders/{tender_id}")
 async def get_tender(tender_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     from uuid import UUID
@@ -113,6 +125,26 @@ async def get_tender(tender_id: str, session: AsyncSession = Depends(get_session
     if not row:
         raise HTTPException(status_code=404, detail="Tender not found")
     return row.to_dict()
+
+
+@app.get("/v1/tenders/{tender_id}/artifacts")
+async def get_tender_artifacts(tender_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    row = await get_tender(tender_id, session)
+    gos = ((row.get("extras") or {}).get("goszakup") or {})
+    return {
+        "external_id": row.get("external_id"),
+        "detail_url": (row.get("extras") or {}).get("detail_url"),
+        "search_filters": (row.get("extras") or {}).get("search_filters") or {},
+        "matched_keywords": (row.get("extras") or {}).get("matched_keywords") or [],
+        "tabs": gos.get("tabs") or [],
+        "documents": gos.get("documents") or [],
+        "lots": gos.get("lots") or [],
+        "bidders": gos.get("bidders") or [],
+        "protocols": gos.get("protocols") or [],
+        "contracts": gos.get("contracts") or [],
+        "stored_assets": gos.get("stored_assets") or [],
+        "raw_tab_stats": gos.get("raw_tab_stats") or {},
+    }
 
 
 @app.get("/v1/contractors")

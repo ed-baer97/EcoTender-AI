@@ -12,11 +12,15 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  LinearProgress,
   Stack,
   Switch,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
+import AdminTenders from "./AdminTenders";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 
@@ -47,6 +51,24 @@ type ParserItem = {
 type Overview = {
   llm_ready: boolean;
   goszakup_ready: boolean;
+};
+
+type IngestTask = {
+  task_id: string;
+  state: string;
+  ready: boolean;
+  successful: boolean;
+  meta?: {
+    source_code?: string;
+    stage?: string;
+    current?: number;
+    total?: number;
+    percent?: number;
+    message?: string;
+    pages_ok?: number;
+    pages_fail?: number;
+  };
+  result?: any;
 };
 
 type Props = {
@@ -129,6 +151,10 @@ export default function AdminPanel({ token, user, onBack }: Props) {
 
   const [expandedLlm, setExpandedLlm] = useState(true);
   const [expandedParsers, setExpandedParsers] = useState(true);
+  const [tab, setTab] = useState<"integrations" | "tenders">("integrations");
+  const [ingestTask, setIngestTask] = useState<IngestTask | null>(null);
+
+  const dailySchedule = "Ежесуточно 03:00 UTC";
 
   const load = useCallback(async () => {
     setError(null);
@@ -151,6 +177,31 @@ export default function AdminPanel({ token, user, onBack }: Props) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!ingestTask || ingestTask.ready) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/ingest/tasks/${ingestTask.task_id}`, {
+          headers: authHeaders(token),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        setIngestTask(data);
+        if (data.ready) {
+          setOkMsg(
+            data.successful
+              ? `Crawl завершён${data.result?.pages_ok != null ? ` · ok=${data.result.pages_ok}, fail=${data.result.pages_fail || 0}` : ""}`
+              : "Crawl завершился с ошибкой"
+          );
+          await load();
+        }
+      } catch {
+        // keep polling silent; user still sees current progress
+      }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [ingestTask, token, load]);
 
   function openCreateLlm() {
     setLlmForm(emptyLlm());
@@ -374,6 +425,15 @@ export default function AdminPanel({ token, user, onBack }: Props) {
       });
       const data = await res.json();
       setOkMsg(`Crawl: ${data.status}${data.task_id ? ` · ${data.task_id}` : ""}`);
+      if (data.task_id) {
+        setIngestTask({
+          task_id: data.task_id,
+          state: "PENDING",
+          ready: false,
+          successful: false,
+          meta: { source_code: sourceCode, percent: 0, message: "Задача поставлена в очередь" },
+        });
+      }
     } catch {
       setError("Не удалось поставить crawl в очередь");
     } finally {
@@ -391,13 +451,54 @@ export default function AdminPanel({ token, user, onBack }: Props) {
           <Button size="small" onClick={onBack}>
             ← К карте
           </Button>
-          <Button size="small" variant="outlined" onClick={load} disabled={busy}>
+          <Button size="small" variant="outlined" onClick={load} disabled={busy && tab === "integrations"}>
             Обновить
           </Button>
         </Stack>
       </Box>
 
-      <Box sx={{ p: 3, maxWidth: 960, mx: "auto" }}>
+      <Box sx={{ p: 3, maxWidth: tab === "tenders" ? 1200 : 960, mx: "auto" }}>
+        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
+          <Tab value="integrations" label="Интеграции" />
+          <Tab value="tenders" label="Тендеры в БД" />
+        </Tabs>
+
+        {tab === "tenders" ? (
+          <Stack spacing={2}>
+            <Alert severity="info">goszakup crawl запускается автоматически каждый день. Текущее расписание: {dailySchedule}.</Alert>
+            {ingestTask && (
+              <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, p: 2, bgcolor: "background.paper" }}>
+                <Stack spacing={1}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="subtitle2">Прогресс скрапа</Typography>
+                    <Chip
+                      size="small"
+                      color={ingestTask.ready ? (ingestTask.successful ? "success" : "warning") : "primary"}
+                      label={ingestTask.state}
+                    />
+                  </Stack>
+                  <LinearProgress
+                    variant="determinate"
+                    value={Math.max(0, Math.min(100, ingestTask.meta?.percent ?? (ingestTask.ready ? 100 : 0)))}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {ingestTask.meta?.message || "Ожидание статуса..."}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    task: {ingestTask.task_id}
+                    {ingestTask.meta?.current != null && ingestTask.meta?.total != null
+                      ? ` · ${ingestTask.meta.current}/${ingestTask.meta.total}`
+                      : ""}
+                    {ingestTask.meta?.pages_ok != null ? ` · ok=${ingestTask.meta.pages_ok}` : ""}
+                    {ingestTask.meta?.pages_fail != null ? ` · fail=${ingestTask.meta.pages_fail}` : ""}
+                  </Typography>
+                </Stack>
+              </Box>
+            )}
+            <AdminTenders token={token} onRunGoszakup={() => runIngest("KZ_GOSZAKUP_PLAYWRIGHT")} busy={busy} />
+          </Stack>
+        ) : (
+          <>
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
@@ -561,6 +662,8 @@ export default function AdminPanel({ token, user, onBack }: Props) {
             </AccordionDetails>
           </Accordion>
         </Stack>
+          </>
+        )}
       </Box>
 
       <Dialog open={!!llmDialog} onClose={() => setLlmDialog(null)} fullWidth maxWidth="sm">

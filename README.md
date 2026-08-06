@@ -30,7 +30,7 @@ At rest ключи шифруются Fernet (`SECRET_ENCRYPTION_KEY` / fallback
 | Документ | Содержание |
 |----------|------------|
 | [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Питч 2 минуты — что кликать |
-| [docs/GOSZAKUP_PARSER.md](docs/GOSZAKUP_PARSER.md) | Живой парсер goszakup OWS v3 |
+| [docs/GOSZAKUP_PARSER.md](docs/GOSZAKUP_PARSER.md) | goszakup: OWS v3 или Playwright-stub без токена |
 | [docs/STACK.md](docs/STACK.md) | Актуальные версии стека (Aug 2026) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Полная архитектура, микросервисы, масштабирование |
 | [docs/ER_DIAGRAM.md](docs/ER_DIAGRAM.md) | ER-модель PostgreSQL/PostGIS |

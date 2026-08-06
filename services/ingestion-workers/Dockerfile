@@ -1,6 +1,21 @@
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir "celery[redis]" redis pydantic httpx
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "celery[redis]" \
+    redis \
+    pydantic \
+    httpx \
+    "playwright>=1.40" \
+    "beautifulsoup4>=4.12" \
+    "lxml>=5"
+
+RUN playwright install --with-deps chromium
+
 COPY packages/shared /packages/shared
 RUN pip install -e /packages/shared
 COPY data/fixtures /data/fixtures

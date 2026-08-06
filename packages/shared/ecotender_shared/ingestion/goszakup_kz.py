@@ -23,6 +23,7 @@ from ecotender_shared.ingestion.eco_filter import (
     classify_eco_category,
     is_caspian_kz_related,
     is_eco_related,
+    is_mangystau_related,
     map_kz_region,
 )
 from ecotender_shared.schemas import NormalizedTender
@@ -64,6 +65,10 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
         self.limit = limit
         self.max_pages = max_pages
         self.prefer_caspian = prefer_caspian
+        region_only = (
+            os.getenv("GOSZAKUP_REGION_ONLY") or os.getenv("GOSZAKUP_PW_REGION_ONLY", "mangystau") or "mangystau"
+        ).strip().lower()
+        self.region_only = None if region_only in ("", "0", "false", "no", "off", "all", "none") else region_only
         if sample_path:
             self.sample_path = Path(sample_path)
         else:
@@ -104,11 +109,16 @@ class KazakhstanGoszakupAdapter(SourceAdapter):
         )
         if not is_eco_related(blob):
             return False
-        if self.prefer_caspian and not is_caspian_kz_related(blob):
-            # keep strong eco matches even without region hint
-            strong = ("каспий", "нефтезагрязн", "рекультив", "дноуглуб", "бонов")
-            if not any(s in blob.lower() for s in strong):
-                return False
+        if self.region_only in ("mangystau", "man", "kz-man"):
+            return is_mangystau_related(blob)
+        if self.region_only == "caspian" or self.prefer_caspian:
+            if not is_caspian_kz_related(blob):
+                # keep strong eco matches even without region hint when region_only is off
+                if self.region_only == "caspian":
+                    return False
+                strong = ("каспий", "нефтезагрязн", "рекультив", "дноуглуб", "бонов")
+                if not any(s in blob.lower() for s in strong):
+                    return False
         return True
 
     def discover_sync(self, cursor: str | None = None) -> Iterator[str]:

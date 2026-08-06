@@ -15,6 +15,19 @@ def load_prices() -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _norm(text: str) -> str:
+    return " ".join((text or "").lower().replace("-", " ").replace("_", " ").split())
+
+
+SKU_HINTS = {
+    "BOOM_BARRIER_M": ("бон", "бонов", "загражден"),
+    "OIL_SOIL_REMOVE_M3": ("нефтезагряз", "грунт", "утилизац", "очистк"),
+    "WATER_LAB_SAMPLE": ("воды", "вода", "лаборатор", "монитор"),
+    "GEOTEXTILE_M2": ("геотекст", "берегоукреп", "укреп"),
+    "DREDGE_M3": ("дноуглуб", "канал", "фарватер"),
+}
+
+
 class WorkItem(BaseModel):
     name: str
     unit: str
@@ -45,9 +58,16 @@ async def estimate(req: EstimateRequest) -> dict[str, Any]:
     for wi in req.work_items:
         price = catalog.get(wi.sku or "", {}).get("price")
         if price is None:
+            norm_name = _norm(wi.name)
+            for sku, hints in SKU_HINTS.items():
+                if any(h in norm_name for h in hints):
+                    price = catalog.get(sku, {}).get("price")
+                    break
+        if price is None:
             # naive name contains match
+            norm_name = _norm(wi.name)
             for p in catalog.values():
-                if wi.name.lower()[:12] in p["name"].lower():
+                if _norm(p["name"]) in norm_name or norm_name[:12] in _norm(p["name"]):
                     price = p["price"]
                     break
         price = float(price or 0)

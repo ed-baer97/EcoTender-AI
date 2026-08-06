@@ -1,4 +1,4 @@
-"""Smoke checklist before demo: health, ready, login, me, risk."""
+"""Smoke checklist before demo: health, ready, login, me, risk, goszakup artifacts."""
 
 from __future__ import annotations
 
@@ -117,6 +117,17 @@ def main() -> int:
             failed += 1
     except RuntimeError as exc:
         step("5. Risk score", False, str(exc))
+        failed += 1
+
+    try:
+        code, data = _request("GET", f"{API}/tenders/{TENDER_REF}/artifacts", token=token or None)
+        docs = len((data or {}).get("documents") or []) if isinstance(data, dict) else 0
+        tabs = len((data or {}).get("tabs") or []) if isinstance(data, dict) else 0
+        ok = code == 200 and isinstance(data, dict)
+        if not step("6. Goszakup artifacts", ok, f"HTTP {code} docs={docs} tabs={tabs}"):
+            failed += 1
+    except RuntimeError as exc:
+        step("6. Goszakup artifacts", False, str(exc))
         failed += 1
 
     if failed:

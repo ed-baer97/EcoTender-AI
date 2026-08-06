@@ -26,8 +26,18 @@ import {
   Popup,
   Polyline,
   Polygon,
+  useMap,
 } from "react-leaflet";
 import AdminPanel from "./AdminPanel";
+
+function FlyToSelected({ lat, lon }: { lat?: number | null; lon?: number | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (lat == null || lon == null) return;
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 9), { duration: 0.85 });
+  }, [lat, lon, map]);
+  return null;
+}
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 const GIBS_URL =
@@ -54,6 +64,7 @@ type Tender = {
   amendments_count?: number;
   amendment_amount_ratio?: number;
   market_amount_est?: number;
+  extras?: Record<string, any>;
 };
 
 type Risk = {
@@ -64,6 +75,16 @@ type Risk = {
   model_version?: string;
   explanation_meta?: { source?: string; model?: string };
 };
+
+function gosExtras(t?: Tender | null) {
+  const gos = (t?.extras as any)?.goszakup || {};
+  return {
+    filters: (t?.extras as any)?.search_filters || {},
+    docs: gos.documents || [],
+    tabs: gos.tabs || [],
+    lots: gos.lots || [],
+  };
+}
 
 type Contractor = {
   name: string;
@@ -327,6 +348,7 @@ export default function App() {
 
         <Box sx={{ position: "relative", minHeight: 420 }}>
           <MapContainer center={center} zoom={6} style={{ height: "100%", width: "100%" }}>
+            <FlyToSelected lat={selected?.lat} lon={selected?.lon} />
             <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             {showGibs && <TileLayer url={GIBS_URL} opacity={0.55} attribution="NASA GIBS" maxNativeZoom={8} />}
             {coast.length > 0 && <Polyline positions={coast} pathOptions={{ color: "#1B4965", weight: 2 }} />}
@@ -354,12 +376,18 @@ export default function App() {
               .filter((t) => t.lat && t.lon)
               .map((t) => {
                 const color = bandColor[t.risk_band || "low"];
+                const active = selected?.external_id === t.external_id;
                 return (
                   <CircleMarker
                     key={t.external_id}
                     center={[t.lat!, t.lon!]}
-                    radius={t.risk_band === "critical" || t.risk_band === "high" ? 11 : 8}
-                    pathOptions={{ color, fillColor: color, fillOpacity: 0.85, weight: 1 }}
+                    radius={active ? 14 : t.risk_band === "critical" || t.risk_band === "high" ? 11 : 8}
+                    pathOptions={{
+                      color,
+                      fillColor: color,
+                      fillOpacity: active ? 1 : 0.85,
+                      weight: active ? 3 : 1,
+                    }}
                     eventHandlers={{ click: () => openTender(t) }}
                   >
                     <Popup>
@@ -401,6 +429,14 @@ export default function App() {
                   </Typography>
                 </Typography>
                 <Typography variant="body2">{risk.explanation}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  docs: {gosExtras(selected).docs.length} · tabs: {gosExtras(selected).tabs.length} · lots: {gosExtras(selected).lots.length}
+                </Typography>
+                {Object.keys(gosExtras(selected).filters).length > 0 && (
+                  <Typography variant="caption" color="text.secondary">
+                    search: {JSON.stringify(gosExtras(selected).filters)}
+                  </Typography>
+                )}
                 <Divider />
                 {(risk.reasons || []).map((r) => (
                   <Typography key={r.code} variant="body2">

@@ -48,6 +48,7 @@ SERVICES = {
     "risk": os.getenv("RISK_SERVICE_URL", "http://localhost:8004"),
 }
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://localhost:6379/1"))
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 
 DEMO_USERS = {
@@ -449,7 +450,26 @@ async def ingest_sources() -> dict[str, Any]:
                 "auth": None,
             }
         )
+    if not any(s.get("code") == "KZ_GOSZAKUP_PLAYWRIGHT" for s in sources):
+        sources.append(
+            {
+                "code": "KZ_GOSZAKUP_PLAYWRIGHT",
+                "country_code": "KZ",
+                "name": "goszakup portal (Playwright stub)",
+                "docs": "https://goszakup.gov.kz/ru/search/announce",
+                "auth": "Public HTML — no OWS token",
+            }
+        )
     return {"sources": sources}
+
+
+@app.delete("/api/v1/admin/tenders/synthetic")
+async def purge_synthetic_tenders(request: Request) -> dict[str, Any]:
+    _require_admin(request)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(f"{SERVICES['tender']}/v1/tenders/by-source/synthetic")
+        resp.raise_for_status()
+        return resp.json()
 
 
 @app.post("/api/v1/ingest/sources/{source_code}/run")
@@ -474,6 +494,26 @@ async def ingest_run(source_code: str, request: Request) -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "detail": str(exc)}
+
+
+@app.get("/api/v1/ingest/tasks/{task_id}")
+async def ingest_task_status(task_id: str, request: Request) -> dict[str, Any]:
+    _require_user(request)
+    from celery import Celery
+
+    capp = Celery(broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
+    result = capp.AsyncResult(task_id)
+    meta = result.info if isinstance(result.info, dict) else {}
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "state": result.state,
+        "ready": result.ready(),
+        "successful": result.successful() if result.ready() else False,
+        "meta": meta,
+    }
+    if result.ready():
+        payload["result"] = result.result
+    return payload
 
 
 async def _proxy(base: str, path: str, request: Request) -> Response:
@@ -503,6 +543,19 @@ async def score_tender_card(tender_ref: str) -> Any:
         }
         r = await client.post(f"{SERVICES['risk']}/v1/score", json=payload)
         risk = r.json()
+        # Persist differentiated score so map/list chips match the drawer.
+        if isinstance(risk, dict) and risk.get("risk_score") is not None:
+            upsert = {
+                **{k: v for k, v in tender.items() if k not in ("id", "ingested_at")},
+                "risk_score": risk.get("risk_score"),
+                "risk_band": risk.get("risk_band"),
+            }
+            try:
+                up = await client.post(f"{SERVICES['tender']}/v1/tenders/upsert", json=upsert)
+                if up.status_code < 400:
+                    tender = up.json()
+            except Exception:
+                pass
     return {"tender": tender, "risk": risk}
 
 
