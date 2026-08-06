@@ -605,6 +605,8 @@ async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
             if isinstance(meta, dict) and risk.get("explanation"):
                 extras["llm_explain"] = {
                     "text": risk.get("explanation"),
+                    "sections": risk.get("explanation_sections") or {},
+                    "verdicts": risk.get("verdicts") or {},
                     "provider": meta.get("provider"),
                     "model": meta.get("model"),
                     "prompt_version": meta.get("prompt_version"),
@@ -613,6 +615,13 @@ async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
                     "scored_at": risk.get("scored_at"),
                     "risk_score": risk.get("risk_score"),
                     "risk_band": risk.get("risk_band"),
+                    "model_risk_score": risk.get("model_risk_score"),
+                    "model_risk_band": risk.get("model_risk_band"),
+                    "conflict": (risk.get("verdicts") or {}).get("conflict") or meta.get("conflict"),
+                    "confidence": (risk.get("verdicts") or {}).get("confidence") or meta.get("confidence"),
+                    "auditor_band": ((risk.get("verdicts") or {}).get("auditor") or {}).get("risk_band"),
+                    "auditor_summary": ((risk.get("verdicts") or {}).get("auditor") or {}).get("summary"),
+                    "agree_with_model": ((risk.get("verdicts") or {}).get("auditor") or {}).get("agree_with_model"),
                     "evidence_summary": risk.get("evidence_summary"),
                     **({"error": meta["error"]} if meta.get("error") else {}),
                 }

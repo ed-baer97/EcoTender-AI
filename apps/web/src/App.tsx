@@ -67,10 +67,20 @@ type Tender = {
   extras?: Record<string, any>;
 };
 
+type ExplainSections = {
+  verdict?: string;
+  evidence?: string[];
+  gaps?: string[];
+  recommendation?: string;
+};
+
 type Risk = {
   risk_score: number;
   risk_band: string;
+  model_risk_score?: number;
+  model_risk_band?: string;
   explanation?: string;
+  explanation_sections?: ExplainSections;
   reasons?: { code: string; message_ru: string; severity: string }[];
   model_version?: string;
   explanation_meta?: {
@@ -79,9 +89,110 @@ type Risk = {
     evidence_hash?: string;
     prompt_version?: string;
     error?: string;
+    confidence?: string;
+    conflict?: boolean;
   };
   evidence_summary?: { docs?: number; gaps?: string[]; kv_keys?: number };
+  verdicts?: {
+    model?: { risk_score?: number; risk_band?: string; summary?: string };
+    auditor?: { risk_band?: string; summary?: string; agree_with_model?: boolean | null };
+    conflict?: boolean;
+    confidence?: string;
+  };
 };
+
+function parseExplainSections(text?: string, sections?: ExplainSections | null): ExplainSections {
+  if (sections?.verdict || (sections?.evidence && sections.evidence.length) || sections?.recommendation) {
+    return sections;
+  }
+  if (!text) return {};
+  const parts = text.split(/(?=(?:^|\s)[ABCD]\))/);
+  const found: Record<string, string> = {};
+  for (const chunk of parts) {
+    const m = chunk.trim().match(/^([ABCD])\)\s*([\s\S]*)$/);
+    if (m) found[m[1]] = m[2].trim();
+  }
+  if (!Object.keys(found).length) return { verdict: text };
+  const toBullets = (block: string) => {
+    const cleaned = block.replace(/^(Подтверждения[^\n:]*|Пробелы[^\n:]*|Evidence|Gaps)\s*:\s*/i, "").trim();
+    if (/^[-•\d]/m.test(cleaned) || cleaned.includes("\n")) {
+      return cleaned
+        .split(/\n+/)
+        .map((ln) => ln.replace(/^[-•\d.\)\s]+/, "").trim())
+        .filter(Boolean);
+    }
+    return cleaned
+      .split(/(?<=\.)\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  };
+  return {
+    verdict: found.A?.replace(/^(Вердикт|Verdict)\s*:\s*/i, "").trim(),
+    evidence: found.B ? toBullets(found.B) : undefined,
+    gaps: found.C ? toBullets(found.C) : undefined,
+    recommendation: found.D?.replace(/^(Рекомендация|Recommendation)\s*:\s*/i, "").trim(),
+  };
+}
+
+function ExplainBlocks({ text, sections }: { text?: string; sections?: ExplainSections }) {
+  const s = parseExplainSections(text, sections);
+  if (!s.verdict && !(s.evidence || []).length && !s.recommendation) {
+    return (
+      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+        {text}
+      </Typography>
+    );
+  }
+  return (
+    <Stack spacing={1.5}>
+      {s.verdict && (
+        <Box>
+          <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
+            A) Вердикт
+          </Typography>
+          <Typography variant="body2">{s.verdict}</Typography>
+        </Box>
+      )}
+      {(s.evidence || []).length > 0 && (
+        <Box>
+          <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mb={0.5}>
+            B) Подтверждения из документов
+          </Typography>
+          <Box component="ul" sx={{ m: 0, pl: 2.2 }}>
+            {(s.evidence || []).map((item, i) => (
+              <Typography key={i} component="li" variant="body2" sx={{ mb: 0.4 }}>
+                {item}
+              </Typography>
+            ))}
+          </Box>
+        </Box>
+      )}
+      {(s.gaps || []).length > 0 && (
+        <Box>
+          <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mb={0.5}>
+            C) Пробелы данных
+          </Typography>
+          <Box component="ul" sx={{ m: 0, pl: 2.2 }}>
+            {(s.gaps || []).map((item, i) => (
+              <Typography key={i} component="li" variant="body2" sx={{ mb: 0.4 }}>
+                {item}
+              </Typography>
+            ))}
+          </Box>
+        </Box>
+      )}
+      {s.recommendation && (
+        <Box>
+          <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
+            D) Рекомендация
+          </Typography>
+          <Typography variant="body2">{s.recommendation}</Typography>
+        </Box>
+      )}
+    </Stack>
+  );
+}
 
 function gosExtras(t?: Tender | null) {
   const gos = (t?.extras as any)?.goszakup || {};
@@ -239,15 +350,21 @@ export default function App() {
       setRisk({
         risk_score: cached.risk_score,
         risk_band: cached.risk_band || t.risk_band || "medium",
+        model_risk_score: cached.model_risk_score,
+        model_risk_band: cached.model_risk_band,
         explanation: cached.text,
+        explanation_sections: cached.sections,
         model_version: undefined,
         explanation_meta: {
           source: "cache",
           model: cached.model,
           evidence_hash: cached.evidence_hash,
           prompt_version: cached.prompt_version,
+          confidence: cached.confidence,
+          conflict: cached.conflict,
         },
         evidence_summary: cached.evidence_summary,
+        verdicts: cached.verdicts,
       });
     }
     setRiskBusy(true);
@@ -517,6 +634,12 @@ export default function App() {
                       / 100 · {risk.risk_band}
                     </Typography>
                   </Typography>
+                  {(risk.verdicts?.confidence || risk.explanation_meta?.confidence) === "low" && (
+                    <Chip size="small" color="warning" label="low confidence" />
+                  )}
+                  {(risk.verdicts?.conflict || risk.explanation_meta?.conflict) && (
+                    <Chip size="small" color="error" variant="outlined" label="расхождение слоёв" />
+                  )}
                   <Button
                     size="small"
                     variant="outlined"
@@ -526,7 +649,41 @@ export default function App() {
                     {riskBusy ? "Считаем…" : "Пересчитать"}
                   </Button>
                 </Stack>
-                <Typography variant="body2">{risk.explanation}</Typography>
+
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    sx={{
+                      borderColor: bandColor[risk.verdicts?.model?.risk_band || risk.model_risk_band || risk.risk_band] || undefined,
+                      height: "auto",
+                      py: 0.6,
+                      "& .MuiChip-label": { whiteSpace: "normal", maxWidth: 200 },
+                    }}
+                    label={`Модель: ${risk.verdicts?.model?.risk_score ?? risk.model_risk_score ?? risk.risk_score} · ${
+                      risk.verdicts?.model?.risk_band || risk.model_risk_band || risk.risk_band
+                    }`}
+                  />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={risk.verdicts?.conflict ? "warning" : "default"}
+                    sx={{ height: "auto", py: 0.6, "& .MuiChip-label": { whiteSpace: "normal", maxWidth: 220 } }}
+                    label={`Аудитор: ${risk.verdicts?.auditor?.risk_band || risk.risk_band}${
+                      risk.verdicts?.auditor?.summary
+                        ? ` — ${String(risk.verdicts.auditor.summary).slice(0, 90)}`
+                        : ""
+                    }`}
+                  />
+                </Stack>
+
+                {(risk.verdicts?.conflict || risk.explanation_meta?.conflict) && (
+                  <Alert severity="warning" sx={{ py: 0.5 }}>
+                    Модель и аудитор по документам расходятся. Показанный score скорректирован (low confidence).
+                  </Alert>
+                )}
+
+                <ExplainBlocks text={risk.explanation} sections={risk.explanation_sections} />
                 <Typography variant="caption" color="text.secondary">
                   docs: {gosExtras(selected).docs.length} · tabs: {gosExtras(selected).tabs.length} · lots:{" "}
                   {gosExtras(selected).lots.length}

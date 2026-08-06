@@ -49,6 +49,47 @@ SENSITIVE_ECO = {
     "coastal_cleanup",
 }
 
+# Market fixture match must be at least "hint" quality before overprice affects score.
+MARKET_CONFIDENCE_MIN = 0.55
+# Ratios this extreme usually mean wrong SKU / unit mismatch, not real overprice.
+ABSURD_OVERPRICE_RATIO = 8.0
+
+
+def _resolve_market_confidence(raw: dict[str, Any]) -> float | None:
+    if raw.get("market_match_confidence") not in (None, ""):
+        try:
+            return float(raw["market_match_confidence"])
+        except (TypeError, ValueError):
+            pass
+    extras = raw.get("extras") or {}
+    me = extras.get("market_estimate") if isinstance(extras, dict) else None
+    if isinstance(me, dict) and me.get("confidence") not in (None, ""):
+        try:
+            return float(me["confidence"])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _market_estimate_usable(
+    amount: float,
+    market: float,
+    confidence: float | None,
+) -> tuple[bool, str | None]:
+    """Gate weak / irrelevant market matches so they cannot inflate risk."""
+    if market <= 0:
+        return False, "no_market"
+    over = amount / market if market > 0 else 1.0
+    # Legacy rows without confidence: distrust extreme ratios.
+    conf = confidence if confidence is not None else 0.4
+    if conf < MARKET_CONFIDENCE_MIN:
+        return False, "low_match_confidence"
+    if over >= ABSURD_OVERPRICE_RATIO and conf < 0.9:
+        return False, "absurd_overprice_ratio"
+    if over >= 20.0:
+        return False, "absurd_overprice_ratio"
+    return True, None
+
 
 def build_features(raw: dict[str, Any]) -> dict[str, Any]:
     extras = raw.get("extras") or {}
@@ -61,10 +102,14 @@ def build_features(raw: dict[str, Any]) -> dict[str, Any]:
     tab_stats = gos.get("raw_tab_stats") or {}
     amount = float(raw.get("amount") or 0.0)
     market_raw = raw.get("market_amount_est")
-    market = float(market_raw) if market_raw not in (None, "", 0, 0.0) else (amount or 1.0)
+    market_conf = _resolve_market_confidence(raw)
+    has_raw_market = market_raw not in (None, "", 0, 0.0)
+    market_val = float(market_raw) if has_raw_market else 0.0
+    raw_overprice = (amount / market_val) if (has_raw_market and market_val > 0) else 1.0
+    usable, ignore_reason = _market_estimate_usable(amount, market_val, market_conf) if has_raw_market else (False, None)
+    overprice = raw_overprice if usable else 1.0
     parts_raw = raw.get("participants_count")
     participants = int(parts_raw) if parts_raw not in (None, "") else (-1 if not bidders else len(bidders))
-    overprice = amount / market if market > 0 else 1.0
     area = float(raw.get("area_sq_m") or 0.0)
     # True single bidder only when explicitly one participant — missing ≠ single.
     single_bidder = 1 if participants == 1 else 0
@@ -73,6 +118,9 @@ def build_features(raw: dict[str, Any]) -> dict[str, Any]:
         "amount_log": math.log1p(amount),
         "amount": amount,
         "overprice_ratio": overprice,
+        "overprice_ratio_raw": raw_overprice if has_raw_market else None,
+        "market_match_confidence": market_conf,
+        "market_ignored_reason": ignore_reason,
         "participants_count": max(0, participants),
         "participants_known": 1 if participants >= 0 else 0,
         "contractor_wins_2y": int(raw.get("contractor_wins_2y") or 0),
@@ -86,7 +134,7 @@ def build_features(raw: dict[str, Any]) -> dict[str, Any]:
         "procurement_method": raw.get("procurement_method") or "unknown",
         "region_code": raw.get("region_code") or "UNK",
         "country_code": raw.get("country_code") or "XX",
-        "has_market_est": 1 if market_raw not in (None, "", 0, 0.0) else 0,
+        "has_market_est": 1 if usable else 0,
         "lots_count": len(lots),
         "documents_count": len(documents),
         "protocols_count": len(protocols),
@@ -324,6 +372,18 @@ def score_tender(raw: dict[str, Any], model_version: str | None = None) -> Score
                 "severity": "high" if pct >= 35 else "medium",
                 "message_ru": f"Стоимость превышает рыночную на {pct}%.",
                 "contribution": 0.25,
+            }
+        )
+    elif features.get("market_ignored_reason"):
+        reasons.append(
+            {
+                "code": "MARKET_ESTIMATE_WEAK",
+                "severity": "low",
+                "message_ru": (
+                    "Рыночная оценка отключена: слабый/нерелевантный match каталога "
+                    f"({features.get('market_ignored_reason')})."
+                ),
+                "contribution": 0.0,
             }
         )
     if features["single_bidder"]:

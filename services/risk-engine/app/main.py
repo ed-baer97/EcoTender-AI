@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from app.engine.llm_explain import explain_with_llm_api
+from app.engine.llm_explain import blend_scores_on_conflict, explain_with_llm_api
 from app.engine.scoring import score_tender
 
 logging.basicConfig(
@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ecotender.risk")
 
-app = FastAPI(title="EcoTender Risk Engine", version="0.2.0")
+app = FastAPI(title="EcoTender Risk Engine", version="0.3.0")
 
 
 class ScoreRequest(BaseModel):
@@ -41,8 +41,6 @@ async def score(req: ScoreRequest) -> dict[str, Any]:
     title = req.title or str(tender.get("title") or "")
     logger.info("[score] start tender_id=%s title=%r force=%s", tender_id, title[:80], req.force)
 
-    # Fast path: return cached CatBoost+LLM bundle when hash still valid is handled inside explain;
-    # CatBoost itself is cheap — always refresh score so band/chips stay current.
     result = score_tender(tender)
     logger.info(
         "[score] catboost tender_id=%s score=%.1f band=%s model=%s",
@@ -68,13 +66,27 @@ async def score(req: ScoreRequest) -> dict[str, Any]:
         tender=tender,
         force=req.force,
     )
+    overprice_driven = any(r.get("code") == "OVERPRICE" for r in result.top_reasons) or bool(
+        result.feature_vector.get("market_ignored_reason")
+    )
+    # If market was ignored but old cached LLM still conflicts — still blend.
+    # Also blend when auditor explicitly conflicts with a high model score.
+    blended = blend_scores_on_conflict(
+        result.risk_score,
+        result.risk_band,
+        conflict=bool(explanation.conflict),
+        auditor_band=explanation.auditor_band,
+        overprice_driven=overprice_driven or result.risk_score >= 70,
+    )
+
     logger.info(
-        "[score] done tender_id=%s explain_source=%s provider=%s model=%s hash=%s error=%s",
+        "[score] done tender_id=%s explain_source=%s conflict=%s confidence=%s model=%.1f display=%.1f error=%s",
         tender_id,
         explanation.source,
-        explanation.provider,
-        explanation.model,
-        explanation.evidence_hash,
+        blended.get("conflict"),
+        blended.get("confidence"),
+        result.risk_score,
+        blended["risk_score"],
         explanation.error,
     )
 
@@ -84,19 +96,42 @@ async def score(req: ScoreRequest) -> dict[str, Any]:
         "prompt_version": explanation.prompt_version,
         "source": explanation.source,
         "evidence_hash": explanation.evidence_hash,
+        "confidence": blended.get("confidence"),
+        "conflict": blended.get("conflict"),
     }
     if explanation.error:
         meta["error"] = explanation.error
 
+    verdicts = {
+        "model": {
+            "risk_score": blended.get("model_risk_score", result.risk_score),
+            "risk_band": blended.get("model_risk_band", result.risk_band),
+            "summary": "; ".join(r.get("message_ru", "") for r in result.top_reasons[:2] if r.get("message_ru")),
+        },
+        "auditor": {
+            "risk_band": explanation.auditor_band or result.risk_band,
+            "summary": explanation.auditor_summary
+            or (explanation.sections.get("verdict") if explanation.sections else None)
+            or explanation.text[:180],
+            "agree_with_model": explanation.agree_with_model,
+        },
+        "conflict": bool(blended.get("conflict") or explanation.conflict),
+        "confidence": blended.get("confidence") or "high",
+    }
+
     return {
         "tender_id": tender_id,
-        "risk_score": result.risk_score,
-        "risk_band": result.risk_band,
+        "risk_score": blended["risk_score"],
+        "risk_band": blended["risk_band"],
+        "model_risk_score": blended.get("model_risk_score", result.risk_score),
+        "model_risk_band": blended.get("model_risk_band", result.risk_band),
         "corruption_proba": result.corruption_proba,
         "model_version": result.model_version,
         "scored_at": datetime.now(timezone.utc).isoformat(),
         "explanation": explanation.text,
+        "explanation_sections": explanation.sections or {},
         "explanation_meta": meta,
+        "verdicts": verdicts,
         "evidence_summary": {
             "docs": len((explanation.evidence or {}).get("doc_extracts") or []),
             "gaps": (explanation.evidence or {}).get("gaps") or [],

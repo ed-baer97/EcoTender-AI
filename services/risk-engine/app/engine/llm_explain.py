@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,8 +20,10 @@ import httpx
 
 from app.engine.scoring import ScoreResult, template_explain
 
-PROMPT_VERSION = "explain-v3-evidence-docs"
+PROMPT_VERSION = "explain-v4-structured"
 logger = logging.getLogger("ecotender.llm")
+
+BAND_MIDPOINT = {"low": 18.0, "medium": 42.0, "high": 68.0, "critical": 86.0}
 
 
 def _mask_key(api_key: str | None) -> str:
@@ -37,15 +40,23 @@ SYSTEM_PROMPT = """Ты — внешний аудитор госзакупок �
 Правила:
 1) Используй ТОЛЬКО факты из JSON. Не выдумывай суммы, даты, победителей, пункты ТЗ.
 2) Валюта: currency из JSON. Для KZT — «тенге»/KZT. Запрещено писать «рублей/руб», если currency ≠ RUB.
-3) Слой модели (risk_score, reasons, anomalies) — опорный индикатор; сверь его с документами и KV. Если модель и документы расходятся — явно укажи расхождение.
-4) Документы: опирайся на doc_extracts; если excerpt обрезан или error — скажи, что данных не хватает.
+3) Слой модели (risk_score, reasons, anomalies) — индикатор. Если модель и документы расходятся (например, «завышение ×N», а в документах экономия) — conflict=true.
+4) Если market_ignored_reason в key_features — не опирайся на «завышение цены» модели.
 5) Не обвиняй в преступлениях; формулируй как аналитический риск.
 
-Структура ответа (русский, ≤180 слов, без markdown-заголовков):
-A) Вердикт: score/band своими словами + 1 фраза «почему».
-B) Подтверждения из документов/KV (3–5 пунктов).
-C) Пробелы данных / что проверить вручную.
-D) Рекомендация: мониторинг | углублённый аудит | приоритетный аудит."""
+Ответ — ТОЛЬКО один JSON-объект (без markdown-оградки), схема:
+{
+  "conflict": false,
+  "agree_with_model": true,
+  "auditor_band": "low|medium|high|critical",
+  "auditor_summary": "одна фраза вердикта аудитора",
+  "sections": {
+    "verdict": "2–3 предложения",
+    "evidence": ["факт 1", "факт 2", "факт 3"],
+    "gaps": ["пробел 1", "пробел 2"],
+    "recommendation": "мониторинг | углублённый аудит | приоритетный аудит"
+  }
+}"""
 
 
 @dataclass
@@ -59,6 +70,201 @@ class ExplainResult:
     evidence_hash: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     doc_extracts_to_persist: list[dict[str, Any]] | None = None
+    sections: dict[str, Any] = field(default_factory=dict)
+    conflict: bool = False
+    agree_with_model: bool | None = None
+    auditor_band: str | None = None
+    auditor_summary: str | None = None
+
+
+def format_explain_text(sections: dict[str, Any], *, auditor_summary: str | None = None) -> str:
+    """Human-readable multi-line text for UI / cache."""
+    parts: list[str] = []
+    verdict = str(sections.get("verdict") or auditor_summary or "").strip()
+    if verdict:
+        parts.append(f"A) Вердикт\n{verdict}")
+    evidence = sections.get("evidence") or []
+    if isinstance(evidence, str):
+        evidence = [evidence]
+    if evidence:
+        bullets = "\n".join(f"• {str(x).strip()}" for x in evidence if str(x).strip())
+        if bullets:
+            parts.append(f"B) Подтверждения из документов\n{bullets}")
+    gaps = sections.get("gaps") or []
+    if isinstance(gaps, str):
+        gaps = [gaps]
+    if gaps:
+        bullets = "\n".join(f"• {str(x).strip()}" for x in gaps if str(x).strip())
+        if bullets:
+            parts.append(f"C) Пробелы данных\n{bullets}")
+    rec = str(sections.get("recommendation") or "").strip()
+    if rec:
+        parts.append(f"D) Рекомендация\n{rec}")
+    return "\n\n".join(parts) if parts else (auditor_summary or "")
+
+
+def parse_sections_from_plain_text(text: str) -> dict[str, Any]:
+    """Best-effort split of legacy A)/B)/C)/D) walls of text."""
+    if not text:
+        return {}
+    # Split on A) B) C) D) markers even when they are inline.
+    chunks = re.split(r"(?=(?:^|\s)[ABCD]\))", text.strip())
+    found: dict[str, str] = {}
+    for chunk in chunks:
+        m = re.match(r"\s*([ABCD])\)\s*(.*)", chunk, re.S)
+        if m:
+            found[m.group(1)] = m.group(2).strip()
+    if not found:
+        return {"verdict": text.strip()}
+
+    def _bullets(block: str) -> list[str]:
+        block = block.strip()
+        if not block:
+            return []
+        if re.search(r"(?:^|\n)\s*[-•\d]", block):
+            return [re.sub(r"^[-•\d\.\)\s]+", "", ln).strip() for ln in block.splitlines() if ln.strip()]
+        parts = re.split(r"(?:(?<=\.)\s+|; )", block)
+        return [p.strip() for p in parts if p.strip()][:6]
+
+    sections: dict[str, Any] = {}
+    if found.get("A"):
+        # Strip leading label like "Вердикт:" if present
+        a = re.sub(r"^(?:Вердикт|Verdict)\s*:\s*", "", found["A"], flags=re.I).strip()
+        sections["verdict"] = a
+    if found.get("B"):
+        b = re.sub(r"^(?:Подтверждения[^\n:]*|Evidence)\s*:\s*", "", found["B"], flags=re.I).strip()
+        sections["evidence"] = _bullets(b) or [b]
+    if found.get("C"):
+        c = re.sub(r"^(?:Пробелы[^\n:]*|Gaps)\s*:\s*", "", found["C"], flags=re.I).strip()
+        sections["gaps"] = _bullets(c) or [c]
+    if found.get("D"):
+        d = re.sub(r"^(?:Рекомендация|Recommendation)\s*:\s*", "", found["D"], flags=re.I).strip()
+        sections["recommendation"] = d
+    return sections
+
+
+def _extract_json_object(raw: str) -> dict[str, Any] | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if fence:
+        text = fence.group(1)
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _normalize_band(value: Any) -> str | None:
+    if value is None:
+        return None
+    b = str(value).strip().lower()
+    if b in BAND_MIDPOINT:
+        return b
+    return None
+
+
+def parse_llm_payload(raw_text: str, result: ScoreResult) -> ExplainResult:
+    """Parse structured JSON or fall back to plain text sections."""
+    data = _extract_json_object(raw_text)
+    if data and isinstance(data.get("sections"), dict):
+        sections_raw = data["sections"]
+        evidence = sections_raw.get("evidence") or []
+        gaps = sections_raw.get("gaps") or []
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        if isinstance(gaps, str):
+            gaps = [gaps]
+        sections = {
+            "verdict": str(sections_raw.get("verdict") or data.get("auditor_summary") or "").strip(),
+            "evidence": [str(x).strip() for x in evidence if str(x).strip()],
+            "gaps": [str(x).strip() for x in gaps if str(x).strip()],
+            "recommendation": str(sections_raw.get("recommendation") or "").strip(),
+        }
+        conflict = bool(data.get("conflict"))
+        agree = data.get("agree_with_model")
+        if agree is not None:
+            agree = bool(agree)
+        auditor_band = _normalize_band(data.get("auditor_band")) or result.risk_band
+        auditor_summary = str(data.get("auditor_summary") or sections.get("verdict") or "").strip()
+        text = format_explain_text(sections, auditor_summary=auditor_summary)
+        return ExplainResult(
+            text=text,
+            provider="",
+            model="",
+            prompt_version=PROMPT_VERSION,
+            source="llm_api",
+            sections=sections,
+            conflict=conflict,
+            agree_with_model=agree if agree is not None else (not conflict),
+            auditor_band=auditor_band,
+            auditor_summary=auditor_summary or None,
+        )
+
+    sections = parse_sections_from_plain_text(raw_text)
+    text = format_explain_text(sections) if sections else raw_text.strip()
+    low = (raw_text or "").lower()
+    conflict = any(
+        x in low for x in ("опроверг", "расхожд", "однако документ", "модель указывает")
+    ) and any(x in low for x in ("экономи", "опроверг", "не переплат", "расхожд"))
+    return ExplainResult(
+        text=text or raw_text.strip(),
+        provider="",
+        model="",
+        prompt_version=PROMPT_VERSION,
+        source="llm_api",
+        sections=sections,
+        conflict=conflict,
+        agree_with_model=not conflict,
+        auditor_band=result.risk_band if not conflict else None,
+        auditor_summary=(sections.get("verdict") if sections else None),
+    )
+
+
+def blend_scores_on_conflict(
+    model_score: float,
+    model_band: str,
+    *,
+    conflict: bool,
+    auditor_band: str | None,
+    overprice_driven: bool,
+) -> dict[str, Any]:
+    """When auditor contradicts model (esp. bad overprice), dampen display score."""
+    if not conflict or not auditor_band:
+        return {
+            "risk_score": model_score,
+            "risk_band": model_band,
+            "model_risk_score": model_score,
+            "model_risk_band": model_band,
+            "confidence": "high",
+            "conflict": False,
+        }
+    auditor_mid = BAND_MIDPOINT.get(auditor_band, model_score)
+    weight_auditor = 0.7 if overprice_driven else 0.55
+    blended = round((1.0 - weight_auditor) * model_score + weight_auditor * auditor_mid, 1)
+    blended = min(blended, model_score)
+    from ecotender_shared.enums import score_to_band
+
+    return {
+        "risk_score": blended,
+        "risk_band": score_to_band(blended).value,
+        "model_risk_score": model_score,
+        "model_risk_band": model_band,
+        "auditor_band": auditor_band,
+        "confidence": "low",
+        "conflict": True,
+    }
 
 
 def _llm_config() -> dict[str, str | None]:
@@ -142,7 +348,6 @@ def _build_gaps(tender: dict[str, Any], gos: dict[str, Any], extracts: list[dict
 def portal_announce_url(external_id: str | None) -> str | None:
     if not external_id:
         return None
-    # external_id often like "17438930-1" — announce id before dash
     announce_id = str(external_id).split("-")[0]
     if announce_id.isdigit():
         return f"https://goszakup.gov.kz/ru/announce/index/{announce_id}"
@@ -169,7 +374,6 @@ def build_evidence_pack(
     if not isinstance(gos, dict):
         gos = {}
 
-    # Lazy MinIO extract when ingest didn't populate excerpts yet.
     extracts_updated = False
     try:
         from ecotender_shared.doc_extract import ensure_doc_extracts_from_minio, rank_doc_extracts
@@ -223,6 +427,34 @@ def build_evidence_pack(
         "status_label": extras.get("status_label"),
     }
 
+    # Prefer features that explain market gating to the auditor model.
+    prefer_keys = {
+        "amount",
+        "overprice_ratio",
+        "overprice_ratio_raw",
+        "market_match_confidence",
+        "market_ignored_reason",
+        "has_market_est",
+        "participants_count",
+        "single_bidder",
+        "eco_category",
+        "procurement_method",
+        "region_code",
+        "lots_count",
+        "documents_count",
+    }
+    key_features = []
+    for k, v in result.feature_vector.items():
+        if k not in prefer_keys:
+            continue
+        if isinstance(v, str) or v is not None:
+            key_features.append({"name": k, "value": v})
+    for k, v in list(result.feature_vector.items())[:12]:
+        if any(x["name"] == k for x in key_features):
+            continue
+        if not isinstance(v, str) or k in {"eco_category", "procurement_method", "region_code", "country_code"}:
+            key_features.append({"name": k, "value": v})
+
     model_layer = {
         "risk_score": result.risk_score,
         "risk_band": result.risk_band,
@@ -232,11 +464,8 @@ def build_evidence_pack(
             {"anomaly_type": a.anomaly_type, "severity": a.severity, "evidence": a.evidence}
             for a in result.anomalies
         ],
-        "key_features": [
-            {"name": k, "value": v}
-            for k, v in list(result.feature_vector.items())[:12]
-            if not isinstance(v, str) or k in {"eco_category", "procurement_method", "region_code", "country_code"}
-        ],
+        "key_features": key_features[:16],
+        "market_estimate": extras.get("market_estimate") if isinstance(extras.get("market_estimate"), dict) else None,
     }
 
     portal = {
@@ -282,6 +511,9 @@ def cached_explain_from_extras(
     text = str(cache.get("text") or "").strip()
     if not text:
         return None
+    sections = cache.get("sections") if isinstance(cache.get("sections"), dict) else parse_sections_from_plain_text(text)
+    if sections and not cache.get("sections"):
+        text = format_explain_text(sections) or text
     return ExplainResult(
         text=text,
         provider=str(cache.get("provider") or "cache"),
@@ -289,6 +521,11 @@ def cached_explain_from_extras(
         prompt_version=str(cache.get("prompt_version") or PROMPT_VERSION),
         source="cache",
         evidence_hash=evidence_hash,
+        sections=sections or {},
+        conflict=bool(cache.get("conflict")),
+        agree_with_model=cache.get("agree_with_model"),
+        auditor_band=_normalize_band(cache.get("auditor_band")),
+        auditor_summary=str(cache.get("auditor_summary") or "").strip() or None,
     )
 
 
@@ -319,8 +556,18 @@ async def explain_with_llm_api(
     doc_extracts_to_persist = evidence.pop("_doc_extracts_full", None)
     ehash = hash_evidence(evidence)
 
+    template_sections = {
+        "verdict": template_explain(result, title),
+        "evidence": [r.get("message_ru") for r in result.top_reasons[:3] if r.get("message_ru")],
+        "gaps": evidence.get("gaps") or [],
+        "recommendation": (
+            "приоритетный аудит"
+            if result.risk_score >= 60
+            else ("углублённый аудит" if result.risk_score >= 30 else "мониторинг")
+        ),
+    }
     fallback = ExplainResult(
-        text=template_explain(result, title),
+        text=format_explain_text(template_sections),
         provider=provider,
         model=model,
         prompt_version=PROMPT_VERSION,
@@ -328,6 +575,11 @@ async def explain_with_llm_api(
         evidence_hash=ehash,
         evidence=evidence,
         doc_extracts_to_persist=doc_extracts_to_persist if isinstance(doc_extracts_to_persist, list) else None,
+        sections=template_sections,
+        conflict=False,
+        agree_with_model=True,
+        auditor_band=result.risk_band,
+        auditor_summary=template_sections["verdict"][:200],
     )
 
     if not force:
@@ -362,13 +614,13 @@ async def explain_with_llm_api(
     payload = {
         "model": cfg["model"],
         "temperature": 0.2,
-        "max_tokens": 420,
+        "max_tokens": 700,
         "enable_thinking": False,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": "Сформируй разбор по Evidence Pack:\n" + json.dumps(evidence, ensure_ascii=False),
+                "content": "Сформируй JSON-разбор по Evidence Pack:\n" + json.dumps(evidence, ensure_ascii=False),
             },
         ],
     }
@@ -432,27 +684,27 @@ async def explain_with_llm_api(
                 )
                 return fallback
             used_model = str(data.get("model") or cfg["model"])
+            parsed = parse_llm_payload(text, result)
+            parsed.provider = provider
+            parsed.model = used_model
+            parsed.prompt_version = PROMPT_VERSION
+            parsed.source = "llm_api"
+            parsed.evidence_hash = ehash
+            parsed.evidence = evidence
+            parsed.doc_extracts_to_persist = (
+                doc_extracts_to_persist if isinstance(doc_extracts_to_persist, list) else None
+            )
             logger.info(
-                "[llm] explain OK tender_id=%s source=llm_api model=%s ms=%s chars=%s hash=%s preview=%r",
+                "[llm] explain OK tender_id=%s source=llm_api model=%s ms=%s chars=%s conflict=%s hash=%s preview=%r",
                 tender_id,
                 used_model,
                 elapsed_ms,
-                len(text),
+                len(parsed.text),
+                parsed.conflict,
                 ehash,
-                text[:120],
+                parsed.text[:120],
             )
-            return ExplainResult(
-                text=text,
-                provider=provider,
-                model=used_model,
-                prompt_version=PROMPT_VERSION,
-                source="llm_api",
-                evidence_hash=ehash,
-                evidence=evidence,
-                doc_extracts_to_persist=doc_extracts_to_persist
-                if isinstance(doc_extracts_to_persist, list)
-                else None,
-            )
+            return parsed
     except Exception as exc:  # noqa: BLE001
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         err_label = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__

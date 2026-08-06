@@ -43,7 +43,8 @@ def _upsert_tender(normalized: dict[str, Any]) -> dict[str, Any]:
         return resp.json()
 
 
-def _estimate_market(normalized: dict[str, Any]) -> float | None:
+def _estimate_market(normalized: dict[str, Any]) -> dict[str, Any] | None:
+    """Call market-service; only treat estimate as usable when match confidence is high enough."""
     base = os.getenv("MARKET_SERVICE_URL", "http://market-service:8002").rstrip("/")
     extras = normalized.get("extras") or {}
     gos = extras.get("goszakup") or {}
@@ -65,7 +66,16 @@ def _estimate_market(normalized: dict[str, Any]) -> float | None:
             resp = client.post(f"{base}/v1/market/estimate", json=payload)
             resp.raise_for_status()
             data = resp.json()
-        return float(data.get("estimated_total") or 0) or None
+        total = float(data.get("estimated_total") or 0) or None
+        confidence = float(data.get("confidence") or 0.0)
+        usable = bool(data.get("usable")) if "usable" in data else (confidence >= 0.55 and bool(total))
+        return {
+            "estimated_total": total,
+            "confidence": confidence,
+            "usable": usable,
+            "lines": data.get("lines") or [],
+            "currency": data.get("currency") or "KZT",
+        }
     except Exception:
         return None
 
@@ -290,8 +300,22 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
                 continue
             payload = _persist_raw_assets(payload)
             market_est = _estimate_market(payload)
-            if market_est is not None and not payload.get("market_amount_est"):
-                payload["market_amount_est"] = market_est
+            if market_est is not None:
+                extras = dict(payload.get("extras") or {})
+                extras["market_estimate"] = {
+                    "estimated_total": market_est.get("estimated_total"),
+                    "confidence": market_est.get("confidence"),
+                    "usable": market_est.get("usable"),
+                    "currency": market_est.get("currency") or "KZT",
+                    "lines": (market_est.get("lines") or [])[:8],
+                }
+                payload["extras"] = extras
+                payload["market_match_confidence"] = market_est.get("confidence")
+                # Only feed scorer a market estimate when match is relevant (hint/sku).
+                if market_est.get("usable") and market_est.get("estimated_total") and not payload.get(
+                    "market_amount_est"
+                ):
+                    payload["market_amount_est"] = market_est["estimated_total"]
             result = _upsert_tender(payload)
             upserted.append(result.get("external_id") or normalized.external_id)
             pages_ok += 1
