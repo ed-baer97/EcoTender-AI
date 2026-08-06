@@ -250,40 +250,75 @@ def parse_documentation_groups(html: str) -> list[dict[str, Any]]:
 
 
 def parse_modal_files(html: str, *, base_url: str = PORTAL_BASE) -> list[dict[str, Any]]:
-    """Parse #ModalShowFilesBody / actionAjaxModalShowFiles response table."""
+    """Parse #ModalShowFilesBody / actionAjaxModalShowFiles response table.
+
+    A single modal group (e.g. Техническая спецификация) often contains many file rows.
+    """
     soup = BeautifulSoup(html, "lxml")
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _is_file_href(href: str) -> bool:
+        low = href.lower()
+        if "signature" in low and "download_file" not in low:
+            return False
+        return any(x in low for x in ("download_file", ".pdf", ".doc", ".docx", ".xls", ".xlsx", "/files/"))
+
     for table in soup.select("table"):
         rows = table.select("tr")
         if len(rows) < 2:
             continue
         headers = [_clean(c.get_text(" ", strip=True)) for c in rows[0].find_all(["th", "td"])]
         header_blob = " ".join(headers).lower()
-        if "документ" not in header_blob and not any(
-            a.get("href") and "download_file" in (a.get("href") or "") for a in table.select("a[href]")
-        ):
+        has_download = any(
+            a.get("href") and _is_file_href(a.get("href") or "") for a in table.select("a[href]")
+        )
+        if "документ" not in header_blob and not has_download:
             continue
         for row in rows[1:]:
             cells = row.find_all(["td", "th"])
             vals = [_clean(c.get_text(" ", strip=True)) for c in cells]
-            link = row.select_one("a[href]")
-            if link is None:
-                continue
-            href = link.get("href") or ""
-            abs_href = urljoin(base_url, href)
             item = {headers[i] if i < len(headers) else f"col_{i}": vals[i] for i in range(len(vals))}
-            out.append(
-                {
-                    "name": _clean(link.get_text(" ", strip=True)) or abs_href,
-                    "url": abs_href,
-                    "lot_number": next((v for k, v in item.items() if "лот" in k.lower()), vals[0] if vals else None),
-                    "author": next((v for k, v in item.items() if "автор" in k.lower()), None),
-                    "organization": next((v for k, v in item.items() if "организац" in k.lower()), None),
-                    "created_at": next((v for k, v in item.items() if "дата" in k.lower()), None),
-                    "row": vals,
-                    "kind": "specification" if any(x in (link.get_text() or "").lower() for x in ("тс", "спецификац", "docx", "pdf")) else "document",
-                }
-            )
+            lot_number = next((v for k, v in item.items() if "лот" in k.lower()), vals[0] if vals else None)
+            author = next((v for k, v in item.items() if "автор" in k.lower()), None)
+            organization = next((v for k, v in item.items() if "организац" in k.lower()), None)
+            created_at = next((v for k, v in item.items() if "дата" in k.lower()), None)
+
+            # Prefer file links in the «Документ» column; fall back to all row file links.
+            doc_cell = None
+            for i, h in enumerate(headers):
+                if "документ" in h.lower() and i < len(cells):
+                    doc_cell = cells[i]
+                    break
+            link_nodes = (doc_cell.select("a[href]") if doc_cell is not None else []) or row.select("a[href]")
+            file_links = []
+            for link in link_nodes:
+                href = link.get("href") or ""
+                if not _is_file_href(href):
+                    continue
+                abs_href = urljoin(base_url, href)
+                if abs_href in seen:
+                    continue
+                seen.add(abs_href)
+                file_links.append((_clean(link.get_text(" ", strip=True)) or abs_href, abs_href))
+
+            for name, abs_href in file_links:
+                low_name = name.lower()
+                out.append(
+                    {
+                        "name": name,
+                        "url": abs_href,
+                        "lot_number": lot_number,
+                        "author": author,
+                        "organization": organization,
+                        "created_at": created_at,
+                        "row": vals,
+                        "kind": "specification"
+                        if any(x in low_name for x in ("тс", "спецификац", "techspec"))
+                        or any(x in abs_href.lower() for x in (".docx", ".doc", ".pdf", "download_file"))
+                        else "document",
+                    }
+                )
     return out
 
 
@@ -444,6 +479,7 @@ def parse_contracts_table(html: str, *, base_url: str = PORTAL_BASE) -> list[dic
                     "name": next((v for k, v in item.items() if "договор" in k.lower()), vals[0] if vals else None),
                     "supplier": next((v for k, v in item.items() if "поставщик" in k.lower()), vals[1] if len(vals) > 1 else None),
                     "amount": next((_parse_amount(v) for k, v in item.items() if "сум" in k.lower()), None),
+                    "status": next((v for k, v in item.items() if "стат" in k.lower()), None),
                     "links": links,
                     "raw": item,
                 }

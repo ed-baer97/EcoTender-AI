@@ -34,7 +34,16 @@ DEFAULT_LLMS: list[dict[str, Any]] = [
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-5.6-terra",
         "active": True,
-    }
+    },
+    {
+        "id": "qwen-3-8-max",
+        "name": "Qwen 3.8 Max",
+        "provider": "qwen",
+        "api_key": "",
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.8-max",
+        "active": False,
+    },
 ]
 
 DEFAULT_PARSERS: list[dict[str, Any]] = [
@@ -280,6 +289,13 @@ def _ensure_integrations(store: dict[str, Any]) -> dict[str, Any]:
         if store.get("LLM_PROVIDER") or os.getenv("LLM_PROVIDER"):
             seeded["provider"] = store.get("LLM_PROVIDER") or os.getenv("LLM_PROVIDER")
         llms = [seeded]
+
+    # Ensure known catalog presets exist (e.g. Qwen 3.8 Max) without touching user keys.
+    existing_ids = {str(x.get("id")) for x in llms}
+    for preset in DEFAULT_LLMS[1:]:
+        if preset["id"] not in existing_ids:
+            llms.append({**preset, "active": False})
+            existing_ids.add(preset["id"])
 
     if not parsers:
         seeded = {**DEFAULT_PARSERS[0]}

@@ -65,6 +65,64 @@ def test_parse_goszakup_tab_tables():
     assert contracts[0]["supplier"] == "КаспийЭкоСервис LLP"
 
 
+def test_search_config_status_multi_query():
+    from ecotender_shared.ingestion.goszakup_playwright import SearchConfig
+
+    q = SearchConfig(
+        filters={"kato": "470000000", "status": "350", "signs": "is_not_active", "amount_from": "1000000"},
+        matched_keywords=[],
+    ).to_query()
+    assert "filter%5Bstatus%5D%5B%5D=350" in q or "filter[status][]=350" in q.replace("%5B", "[").replace("%5D", "]")
+    assert "is_not_active" in q
+    assert "470000000" in q
+
+
+def test_contract_status_filter_accepts_executed():
+    adapter = KazakhstanGoszakupPlaywrightAdapter(offline=True, max_items=1, fetch_detail=False)
+    adapter.require_contract_status = True
+    adapter.contract_statuses = ["действует", "исполнен"]
+    assert adapter._contracts_match_required_status(
+        [{"status": "Передан.Исполнен", "supplier": "X"}]
+    )
+    assert adapter._contracts_match_required_status([{"status": "Действует"}])
+    assert not adapter._contracts_match_required_status([{"status": "Не заключен"}])
+    assert adapter._contracts_match_required_status([])  # empty allowed unless REQUIRE_CONTRACT_ROWS
+
+
+def test_should_ingest_allows_completed_without_contracts():
+    adapter = KazakhstanGoszakupPlaywrightAdapter(offline=True, max_items=1, fetch_detail=False)
+    adapter.require_contract_status = True
+    adapter.require_contract_rows = False
+    adapter.contract_statuses = ["действует", "исполнен"]
+    ok, reason = adapter._should_ingest(contracts=[], status_label="Завершено")
+    assert ok and reason is None
+    ok, reason = adapter._should_ingest(contracts=[{"status": "Не заключен"}], status_label="Завершено")
+    assert not ok
+    assert reason == "contract_status_not_active_or_executed"
+
+
+def test_open_announce_status_rejected():
+    adapter = KazakhstanGoszakupPlaywrightAdapter(offline=True, max_items=1, fetch_detail=False)
+    adapter.announce_status = "350"
+    assert not adapter._passes_filter(
+        {
+            "name_ru": "Очистка Мангистау",
+            "org_name_ru": "Акимат Мангистау",
+            "status_label": "Опубликовано (прием заявок)",
+            "total_sum": 5_000_000,
+        }
+    )
+    assert adapter._passes_filter(
+        {
+            "name_ru": "Очистка Мангистау",
+            "org_name_ru": "Акимат Мангистау",
+            "status_label": "Завершено",
+            "total_sum": 5_000_000,
+            "region_forced": "KZ-MAN",
+        }
+    )
+
+
 def test_parse_overview_and_modal_specification():
     detail = (FIXTURES / "goszakup_announce_detail.html").read_text(encoding="utf-8")
     sections = parse_overview_tables(detail)
@@ -76,7 +134,12 @@ def test_parse_overview_and_modal_specification():
     groups = parse_documentation_groups(modal)
     assert any(g["group_id"] == "102" and "спецификац" in g["name"].lower() for g in groups)
     files = parse_modal_files(modal)
-    assert files
-    assert "Тупкараган" in files[0]["name"]
-    assert "download_file" in files[0]["url"]
+    assert len(files) >= 4
+    names = [f["name"] for f in files]
+    assert any("Тупкараган су" in n for n in names)
+    assert any("Смета" in n for n in names)
+    assert any("Приложение к ТС" in n for n in names)
+    assert all("download_file" in f["url"] for f in files)
+    assert all("signature" not in f["url"] for f in files)
+
 

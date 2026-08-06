@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -30,6 +32,12 @@ from ecotender_shared.runtime_secrets import (
     update_llm,
     update_parser,
 )
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("ecotender.gateway")
 
 app = FastAPI(title="EcoTender API Gateway", version="0.2.0")
 
@@ -308,6 +316,14 @@ async def admin_activate_parser(parser_id: str, request: Request) -> dict[str, A
     return {"ok": True, **data}
 
 
+def _mask_key(api_key: str | None) -> str:
+    if not api_key:
+        return "(empty)"
+    if len(api_key) <= 8:
+        return "***"
+    return f"{api_key[:3]}…{api_key[-4:]}"
+
+
 async def _ping_llm(*, api_key: str, base_url: str, model: str) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -315,6 +331,13 @@ async def _ping_llm(*, api_key: str, base_url: str, model: str) -> dict[str, Any
         "max_tokens": 16,
         "messages": [{"role": "user", "content": "Reply with OK"}],
     }
+    logger.info(
+        "[llm-test] start model=%s base=%s key=%s",
+        model,
+        base_url,
+        _mask_key(api_key),
+    )
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
@@ -322,24 +345,43 @@ async def _ping_llm(*, api_key: str, base_url: str, model: str) -> dict[str, Any
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload,
             )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
             ok = resp.status_code < 400
             body: dict[str, Any] = {}
             try:
                 body = resp.json()
             except Exception:  # noqa: BLE001
                 body = {"raw": resp.text[:300]}
+            preview = (
+                (body.get("choices") or [{}])[0].get("message", {}).get("content")
+                if ok
+                else body.get("error") or body
+            )
+            if ok:
+                logger.info(
+                    "[llm-test] OK http=%s ms=%s model=%s preview=%r",
+                    resp.status_code,
+                    elapsed_ms,
+                    model,
+                    preview,
+                )
+            else:
+                logger.error(
+                    "[llm-test] FAIL http=%s ms=%s model=%s error=%s",
+                    resp.status_code,
+                    elapsed_ms,
+                    model,
+                    preview,
+                )
             return {
                 "ok": ok,
                 "status_code": resp.status_code,
                 "model": model,
                 "base_url": base_url,
-                "preview": (
-                    (body.get("choices") or [{}])[0].get("message", {}).get("content")
-                    if ok
-                    else body.get("error") or body
-                ),
+                "preview": preview,
             }
     except Exception as exc:  # noqa: BLE001
+        logger.exception("[llm-test] FAIL exception=%s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -532,23 +574,53 @@ async def _proxy(base: str, path: str, request: Request) -> Response:
 
 
 @app.post("/api/v1/tenders/{tender_ref}/risk")
-async def score_tender_card(tender_ref: str) -> Any:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         t = await client.get(f"{SERVICES['tender']}/v1/tenders/{tender_ref}")
         tender = t.json()
         payload = {
             "tender_id": tender.get("id"),
             "title": tender.get("title"),
             "features": tender,
+            "force": force,
         }
+        logger.info("[risk] score proxy start tender_ref=%s force=%s", tender_ref, force)
         r = await client.post(f"{SERVICES['risk']}/v1/score", json=payload)
         risk = r.json()
-        # Persist differentiated score so map/list chips match the drawer.
+        meta = risk.get("explanation_meta") if isinstance(risk, dict) else None
+        logger.info(
+            "[risk] score proxy done tender_ref=%s http=%s source=%s hash=%s",
+            tender_ref,
+            r.status_code,
+            (meta or {}).get("source") if isinstance(meta, dict) else None,
+            (meta or {}).get("evidence_hash") if isinstance(meta, dict) else None,
+        )
+        # Persist score + LLM explain cache so reopen skips Qwen.
         if isinstance(risk, dict) and risk.get("risk_score") is not None:
+            extras = dict(tender.get("extras") or {})
+            gos = dict(extras.get("goszakup") or {}) if isinstance(extras.get("goszakup"), dict) else {}
+            if isinstance(risk.get("doc_extracts"), list) and risk.get("doc_extracts"):
+                gos["doc_extracts"] = risk["doc_extracts"]
+                extras["goszakup"] = gos
+            if isinstance(meta, dict) and risk.get("explanation"):
+                extras["llm_explain"] = {
+                    "text": risk.get("explanation"),
+                    "provider": meta.get("provider"),
+                    "model": meta.get("model"),
+                    "prompt_version": meta.get("prompt_version"),
+                    "source": meta.get("source"),
+                    "evidence_hash": meta.get("evidence_hash"),
+                    "scored_at": risk.get("scored_at"),
+                    "risk_score": risk.get("risk_score"),
+                    "risk_band": risk.get("risk_band"),
+                    "evidence_summary": risk.get("evidence_summary"),
+                    **({"error": meta["error"]} if meta.get("error") else {}),
+                }
             upsert = {
                 **{k: v for k, v in tender.items() if k not in ("id", "ingested_at")},
                 "risk_score": risk.get("risk_score"),
                 "risk_band": risk.get("risk_band"),
+                "extras": extras,
             }
             try:
                 up = await client.post(f"{SERVICES['tender']}/v1/tenders/upsert", json=upsert)

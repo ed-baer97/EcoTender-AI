@@ -73,7 +73,14 @@ type Risk = {
   explanation?: string;
   reasons?: { code: string; message_ru: string; severity: string }[];
   model_version?: string;
-  explanation_meta?: { source?: string; model?: string };
+  explanation_meta?: {
+    source?: string;
+    model?: string;
+    evidence_hash?: string;
+    prompt_version?: string;
+    error?: string;
+  };
+  evidence_summary?: { docs?: number; gaps?: string[]; kv_keys?: number };
 };
 
 function gosExtras(t?: Tender | null) {
@@ -85,6 +92,21 @@ function gosExtras(t?: Tender | null) {
     lots: gos.lots || [],
     kv: gos.kv || {},
   };
+}
+
+/** Direct portal URL for manual verification. */
+function portalAnnounceUrl(t?: Tender | null): string | null {
+  if (!t) return null;
+  const extras = t.extras || {};
+  const fromExtras = extras.detail_url || extras.goszakup?.detail_url;
+  if (typeof fromExtras === "string" && fromExtras.startsWith("http")) return fromExtras;
+  const gid = extras.goszakup_id ?? extras.goszakup?.announce_id;
+  if (gid != null && String(gid).match(/^\d+$/)) {
+    return `https://goszakup.gov.kz/ru/announce/index/${gid}`;
+  }
+  const m = String(t.external_id || "").match(/^(\d{5,})/);
+  if (m) return `https://goszakup.gov.kz/ru/announce/index/${m[1]}`;
+  return null;
 }
 
 type Contractor = {
@@ -121,6 +143,7 @@ export default function App() {
   const [workPolys, setWorkPolys] = useState<PolyFeature[]>([]);
   const [selected, setSelected] = useState<Tender | null>(null);
   const [risk, setRisk] = useState<Risk | null>(null);
+  const [riskBusy, setRiskBusy] = useState(false);
   const [contractor, setContractor] = useState<Contractor | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showGibs, setShowGibs] = useState(false);
@@ -205,14 +228,32 @@ export default function App() {
     return c;
   }, [tenders]);
 
-  async function openTender(t: Tender) {
+  async function openTender(t: Tender, opts?: { force?: boolean }) {
     setSelected(t);
     setRisk(null);
     setContractor(null);
     setError(null);
     const ref = t.id || t.external_id;
+    const cached = (t.extras as any)?.llm_explain;
+    if (!opts?.force && cached?.text && cached?.risk_score != null) {
+      setRisk({
+        risk_score: cached.risk_score,
+        risk_band: cached.risk_band || t.risk_band || "medium",
+        explanation: cached.text,
+        model_version: undefined,
+        explanation_meta: {
+          source: "cache",
+          model: cached.model,
+          evidence_hash: cached.evidence_hash,
+          prompt_version: cached.prompt_version,
+        },
+        evidence_summary: cached.evidence_summary,
+      });
+    }
+    setRiskBusy(true);
     try {
-      const res = await fetch(`${API}/tenders/${ref}/risk`, { method: "POST" });
+      const q = opts?.force ? "?force=true" : "";
+      const res = await fetch(`${API}/tenders/${ref}/risk${q}`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         setRisk(data.risk);
@@ -224,6 +265,8 @@ export default function App() {
       }
     } catch {
       setError("Не удалось рассчитать Risk Score");
+    } finally {
+      setRiskBusy(false);
     }
   }
 
@@ -339,8 +382,28 @@ export default function App() {
                   />
                   <ListItemText
                     primary={t.title}
-                    secondary={`${t.region_name || "KZ"} · risk ${t.risk_score ?? "—"}`}
+                    secondary={
+                      <Box component="span">
+                        {`${t.region_name || "KZ"} · risk ${t.risk_score ?? "—"}`}
+                        {portalAnnounceUrl(t) ? (
+                          <>
+                            {" · "}
+                            <Box
+                              component="a"
+                              href={portalAnnounceUrl(t)!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              sx={{ color: "primary.main" }}
+                            >
+                              goszakup
+                            </Box>
+                          </>
+                        ) : null}
+                      </Box>
+                    }
                     primaryTypographyProps={{ fontSize: 14 }}
+                    secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
               ))}
@@ -395,6 +458,14 @@ export default function App() {
                       {t.title}
                       <br />
                       risk: {t.risk_score} ({t.risk_band})
+                      {portalAnnounceUrl(t) ? (
+                        <>
+                          <br />
+                          <a href={portalAnnounceUrl(t)!} target="_blank" rel="noopener noreferrer">
+                            goszakup →
+                          </a>
+                        </>
+                      ) : null}
                     </Popup>
                   </CircleMarker>
                 );
@@ -409,29 +480,58 @@ export default function App() {
             <Typography variant="h6" gutterBottom>
               {selected.title}
             </Typography>
-            <Stack direction="row" gap={1} flexWrap="wrap" mb={2}>
+            <Stack direction="row" gap={1} flexWrap="wrap" mb={1} alignItems="center">
               <Chip size="small" label="KZ" />
               <Chip size="small" label={selected.eco_category || "eco"} variant="outlined" />
               {selected.amount != null && (
                 <Chip size="small" label={`${selected.amount.toLocaleString("ru-RU")} ${selected.currency || "KZT"}`} />
               )}
             </Stack>
+            {portalAnnounceUrl(selected) && (
+              <Typography variant="body2" mb={2}>
+                <Box
+                  component="a"
+                  href={portalAnnounceUrl(selected)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{ color: "primary.main", wordBreak: "break-all" }}
+                >
+                  Открыть на goszakup.gov.kz →
+                </Box>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  {selected.external_id}
+                </Typography>
+              </Typography>
+            )}
             <Alert severity="info" sx={{ mb: 2 }}>
               Risk Score — аналитический индикатор, не юридическое обвинение.
             </Alert>
 
             {risk ? (
               <Stack spacing={1.5} mb={2}>
-                <Typography variant="h4" sx={{ color: bandColor[risk.risk_band] || "text.primary" }}>
-                  {risk.risk_score}
-                  <Typography component="span" variant="body2" color="text.secondary">
-                    {" "}
-                    / 100 · {risk.risk_band}
+                <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
+                  <Typography variant="h4" sx={{ color: bandColor[risk.risk_band] || "text.primary" }}>
+                    {risk.risk_score}
+                    <Typography component="span" variant="body2" color="text.secondary">
+                      {" "}
+                      / 100 · {risk.risk_band}
+                    </Typography>
                   </Typography>
-                </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={riskBusy || !selected}
+                    onClick={() => selected && openTender(selected, { force: true })}
+                  >
+                    {riskBusy ? "Считаем…" : "Пересчитать"}
+                  </Button>
+                </Stack>
                 <Typography variant="body2">{risk.explanation}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  docs: {gosExtras(selected).docs.length} · tabs: {gosExtras(selected).tabs.length} · lots: {gosExtras(selected).lots.length}
+                  docs: {gosExtras(selected).docs.length} · tabs: {gosExtras(selected).tabs.length} · lots:{" "}
+                  {gosExtras(selected).lots.length}
+                  {risk.evidence_summary?.docs != null ? ` · excerpts: ${risk.evidence_summary.docs}` : ""}
+                  {risk.explanation_meta?.source ? ` · explain: ${risk.explanation_meta.source}` : ""}
                 </Typography>
                 {Object.keys(gosExtras(selected).kv).length > 0 && (
                   <Box sx={{ bgcolor: "action.hover", p: 1.2, borderRadius: 1 }}>
@@ -450,14 +550,46 @@ export default function App() {
                 {gosExtras(selected).docs.length > 0 && (
                   <Box>
                     <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
-                      Документы / спецификация
+                      Документы / спецификация ({gosExtras(selected).docs.length})
                     </Typography>
-                    {gosExtras(selected).docs.slice(0, 6).map((d: any, idx: number) => (
-                      <Typography key={`${d.url || d.name}-${idx}`} variant="caption" display="block" sx={{ wordBreak: "break-all" }}>
-                        {d.group_name ? `[${d.group_name}] ` : ""}
-                        {d.name || d.url}
-                      </Typography>
-                    ))}
+                    <Box sx={{ maxHeight: 220, overflow: "auto", bgcolor: "action.hover", p: 1, borderRadius: 1 }}>
+                      {Object.entries(
+                        gosExtras(selected).docs.reduce((acc: Record<string, any[]>, d: any) => {
+                          const key = d.group_name || d.kind || "Документы";
+                          (acc[key] ||= []).push(d);
+                          return acc;
+                        }, {})
+                      ).map(([group, docs]) => (
+                        <Box key={group} mb={1}>
+                          <Typography variant="caption" fontWeight={600} display="block">
+                            {group} · {docs.length}
+                          </Typography>
+                          {docs.map((d: any, idx: number) => (
+                            <Typography
+                              key={`${d.url || d.name}-${idx}`}
+                              variant="caption"
+                              display="block"
+                              sx={{ wordBreak: "break-all", pl: 1 }}
+                            >
+                              {d.lot_number ? `[${d.lot_number}] ` : ""}
+                              {d.url ? (
+                                <Box
+                                  component="a"
+                                  href={d.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  sx={{ color: "primary.main" }}
+                                >
+                                  {d.name || d.url}
+                                </Box>
+                              ) : (
+                                d.name
+                              )}
+                            </Typography>
+                          ))}
+                        </Box>
+                      ))}
+                    </Box>
                   </Box>
                 )}
                 {Object.keys(gosExtras(selected).filters).length > 0 && (
@@ -478,7 +610,7 @@ export default function App() {
               </Stack>
             ) : (
               <Typography variant="body2" color="text.secondary" mb={2}>
-                Расчёт риска…
+                {riskBusy ? "Слой 1 (CatBoost) → слой 2 (Qwen)…" : "Расчёт риска…"}
               </Typography>
             )}
 

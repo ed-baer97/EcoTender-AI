@@ -71,12 +71,27 @@ def _estimate_market(normalized: dict[str, Any]) -> float | None:
 
 
 def _persist_raw_assets(normalized: dict[str, Any]) -> dict[str, Any]:
+    from ecotender_shared.doc_extract import (
+        DOC_KINDS,
+        build_extract_record,
+        extract_text_from_bytes,
+        merge_doc_extracts,
+    )
+
+    extract_on_ingest = os.getenv("GOSZAKUP_PW_EXTRACT_ON_INGEST", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     extras = normalized.get("extras") or {}
     gos = extras.get("goszakup") or {}
     raw_assets = gos.pop("raw_assets", []) or []
     if not raw_assets:
         return normalized
     stored_assets: list[dict[str, Any]] = []
+    new_extracts: list[dict[str, Any]] = []
     for asset in raw_assets:
         try:
             body = asset.get("body_b64")
@@ -85,19 +100,37 @@ def _persist_raw_assets(normalized: dict[str, Any]) -> dict[str, Any]:
             import base64
 
             blob = base64.b64decode(body)
+            kind = str(asset.get("kind") or "raw")
             stored = store_bytes(
                 blob,
-                object_prefix=f"goszakup/{normalized.get('external_id')}/{asset.get('kind') or 'raw'}",
+                object_prefix=f"goszakup/{normalized.get('external_id')}/{kind}",
                 filename=str(asset.get("name") or "artifact.bin"),
                 content_type=str(asset.get("content_type") or "application/octet-stream"),
             )
-            stored_assets.append(
-                stored.to_meta(
-                    kind=asset.get("kind"),
-                    source_url=asset.get("source_url"),
-                    tab_name=asset.get("tab_name"),
-                )
+            meta = stored.to_meta(
+                kind=kind,
+                source_url=asset.get("source_url"),
+                tab_name=asset.get("tab_name"),
             )
+            stored_assets.append(meta)
+            if extract_on_ingest and kind in DOC_KINDS:
+                excerpt, err = extract_text_from_bytes(
+                    blob,
+                    content_type=str(asset.get("content_type") or meta.get("content_type") or ""),
+                    filename=str(asset.get("name") or ""),
+                )
+                new_extracts.append(
+                    build_extract_record(
+                        name=str(asset.get("name") or meta.get("object_key") or "document"),
+                        kind=kind,
+                        sha256=meta.get("sha256"),
+                        excerpt=excerpt,
+                        error=err,
+                        content_type=meta.get("content_type"),
+                        object_key=meta.get("object_key"),
+                        group_name=asset.get("group_name") or asset.get("tab_name"),
+                    )
+                )
         except Exception as exc:
             stored_assets.append(
                 {
@@ -109,14 +142,26 @@ def _persist_raw_assets(normalized: dict[str, Any]) -> dict[str, Any]:
             )
     for doc in gos.get("documents") or []:
         url = doc.get("url")
-        meta = next((x for x in stored_assets if x.get("source_url") == url and x.get("kind") == "document"), None)
+        meta = next(
+            (
+                x
+                for x in stored_assets
+                if x.get("source_url") == url and x.get("kind") in DOC_KINDS
+            ),
+            None,
+        )
         if meta:
             doc["object_key"] = meta.get("object_key")
             doc["bucket"] = meta.get("bucket")
             doc["sha256"] = meta.get("sha256")
             doc["content_type"] = meta.get("content_type", doc.get("content_type"))
             doc["size"] = meta.get("size", doc.get("size"))
+            for ex in new_extracts:
+                if ex.get("sha256") == meta.get("sha256") and doc.get("group_name"):
+                    ex["group_name"] = doc.get("group_name")
     gos["stored_assets"] = stored_assets
+    if new_extracts:
+        gos["doc_extracts"] = merge_doc_extracts(gos.get("doc_extracts"), new_extracts)
     extras["goszakup"] = gos
     normalized["extras"] = extras
     return normalized
@@ -139,8 +184,10 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
         mode = "sample_offline"
     pages_ok = 0
     pages_fail = 0
+    pages_skip = 0
     upserted: list[str] = []
     errors: list[str] = []
+    skip_reasons: dict[str, int] = {}
     self.update_state(
         state="PROGRESS",
         meta={
@@ -203,9 +250,44 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
             if min_amount > 0 and amount is not None:
                 try:
                     if float(amount) < min_amount:
+                        pages_skip += 1
+                        skip_reasons["amount_below_min"] = skip_reasons.get("amount_below_min", 0) + 1
+                        self.update_state(
+                            state="PROGRESS",
+                            meta={
+                                "source_code": source_code,
+                                "stage": "process",
+                                "current": idx,
+                                "total": total_refs,
+                                "pages_ok": pages_ok,
+                                "pages_fail": pages_fail,
+                                "pages_skip": pages_skip,
+                                "percent": min(5 + int((idx / max(total_refs, 1)) * 90), 95),
+                                "message": f"{idx}/{total_refs} · skip amount · ok={pages_ok} skip={pages_skip}",
+                            },
+                        )
                         continue
                 except (TypeError, ValueError):
                     pass
+            skip_reason = (payload.get("extras") or {}).get("ingest_skip")
+            if skip_reason:
+                pages_skip += 1
+                skip_reasons[str(skip_reason)] = skip_reasons.get(str(skip_reason), 0) + 1
+                self.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "source_code": source_code,
+                        "stage": "process",
+                        "current": idx,
+                        "total": total_refs,
+                        "pages_ok": pages_ok,
+                        "pages_fail": pages_fail,
+                        "pages_skip": pages_skip,
+                        "percent": min(5 + int((idx / max(total_refs, 1)) * 90), 95),
+                        "message": f"{idx}/{total_refs} · skip {skip_reason} · ok={pages_ok} skip={pages_skip}",
+                    },
+                )
+                continue
             payload = _persist_raw_assets(payload)
             market_est = _estimate_market(payload)
             if market_est is not None and not payload.get("market_amount_est"):
@@ -226,8 +308,9 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
                 "total": total_refs,
                 "pages_ok": pages_ok,
                 "pages_fail": pages_fail,
+                "pages_skip": pages_skip,
                 "percent": min(percent, 95),
-                "message": f"Обработано {idx}/{total_refs}",
+                "message": f"{idx}/{total_refs} · ok={pages_ok} skip={pages_skip} fail={pages_fail}",
             },
         )
 
@@ -243,6 +326,8 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
         "discovered": len(refs),
         "pages_ok": pages_ok,
         "pages_fail": pages_fail,
+        "pages_skip": pages_skip,
+        "skip_reasons": skip_reasons,
         "upserted": upserted[:50],
         "errors": errors[:10],
         "task_id": getattr(self.request, "id", None),
@@ -256,8 +341,10 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
             "total": total_refs,
             "pages_ok": pages_ok,
             "pages_fail": pages_fail,
+            "pages_skip": pages_skip,
+            "skip_reasons": skip_reasons,
             "percent": 100,
-            "message": f"Готово: {pages_ok} ok / {pages_fail} fail",
+            "message": f"Готово: {pages_ok} ok / {pages_skip} skip / {pages_fail} fail",
             "upserted": upserted[:50],
             "errors": errors[:10],
         },

@@ -46,7 +46,7 @@ At rest ключи шифруются Fernet (`SECRET_ENCRYPTION_KEY` / fallback
 **Backend:** FastAPI · SQLAlchemy 2 · Alembic · Celery · Redis 8 · PostgreSQL 17 + PostGIS 3.5  
 **Frontend:** React 19 · TypeScript · Vite 6 · MUI 7 · Leaflet / react-leaflet 5  
 **Ingestion:** Playwright · BeautifulSoup · lxml  
-**AI:** CatBoost (свой score) + LLM API gpt-5.6-terra (объяснение) · template fallback без ключа  
+**AI:** CatBoost (свой score) + LLM API (gpt-5.6-terra / DeepSeek / **Qwen 3.8 Max**) · template fallback без ключа  
 **GIS:** PostGIS 3.5 · GeoPandas · Shapely · Leaflet
 
 ## Структура монорепо

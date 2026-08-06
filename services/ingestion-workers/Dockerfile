@@ -12,7 +12,10 @@ RUN pip install --no-cache-dir \
     httpx \
     "playwright>=1.40" \
     "beautifulsoup4>=4.12" \
-    "lxml>=5"
+    "lxml>=5" \
+    "pypdf>=4.0" \
+    "python-docx>=1.1" \
+    "minio>=7.2"
 
 RUN playwright install --with-deps chromium
 

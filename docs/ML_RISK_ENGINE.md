@@ -17,7 +17,7 @@
 │                    └──────┬───────┘                      │
 │                           ▼                              │
 │                    LLM Explainer (external API)          │
-│                    OpenAI / DeepSeek / OpenRouter …      │
+│                    OpenAI / DeepSeek / Qwen 3.8 Max / OpenRouter …      │
 │                    + template_fallback                   │
 │                           │                              │
 │                           ▼                              │
@@ -215,7 +215,7 @@ LLM_BASE_URL=https://api.openai.com/v1   # любой OpenAI-compatible endpoint
 LLM_MODEL=gpt-5.6-terra
 ```
 
-Примеры провайдеров: OpenAI, DeepSeek, OpenRouter, облачный Qwen — достаточно сменить `LLM_BASE_URL` / `LLM_MODEL`.
+Примеры провайдеров: OpenAI, DeepSeek, **Qwen 3.8 Max** (`qwen3.8-max` через DashScope compatible-mode), OpenRouter — достаточно сменить `LLM_BASE_URL` / `LLM_MODEL` / ключ.
 
 Код: `services/risk-engine/app/engine/llm_explain.py`  
 Ответ API включает `explanation_meta.source` = `llm_api` | `template_fallback`.

@@ -104,6 +104,36 @@ const emptyLlm = (): LlmForm => ({
   active: false,
 });
 
+const LLM_PRESETS: { label: string; form: Partial<LlmForm> & Pick<LlmForm, "name" | "provider" | "base_url" | "model"> }[] = [
+  {
+    label: "OpenAI gpt-5.6-terra",
+    form: {
+      name: "OpenAI",
+      provider: "openai",
+      base_url: "https://api.openai.com/v1",
+      model: "gpt-5.6-terra",
+    },
+  },
+  {
+    label: "DeepSeek",
+    form: {
+      name: "DeepSeek",
+      provider: "deepseek",
+      base_url: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+    },
+  },
+  {
+    label: "Qwen 3.8 Max",
+    form: {
+      name: "Qwen 3.8 Max",
+      provider: "qwen",
+      base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      model: "qwen3.8-max",
+    },
+  },
+];
+
 const emptyParser = (): ParserForm => ({
   name: "",
   source_code: "",
@@ -490,6 +520,7 @@ export default function AdminPanel({ token, user, onBack }: Props) {
                       ? ` · ${ingestTask.meta.current}/${ingestTask.meta.total}`
                       : ""}
                     {ingestTask.meta?.pages_ok != null ? ` · ok=${ingestTask.meta.pages_ok}` : ""}
+                    {ingestTask.meta?.pages_skip != null ? ` · skip=${ingestTask.meta.pages_skip}` : ""}
                     {ingestTask.meta?.pages_fail != null ? ` · fail=${ingestTask.meta.pages_fail}` : ""}
                   </Typography>
                 </Stack>
@@ -670,13 +701,32 @@ export default function AdminPanel({ token, user, onBack }: Props) {
         <DialogTitle>{llmDialog === "create" ? "Добавить LLM" : "Изменить LLM"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
+            <Stack direction="row" gap={1} flexWrap="wrap">
+              {LLM_PRESETS.map((p) => (
+                <Chip
+                  key={p.label}
+                  label={p.label}
+                  clickable
+                  color={llmForm.model === p.form.model ? "primary" : "default"}
+                  variant={llmForm.model === p.form.model ? "filled" : "outlined"}
+                  onClick={() =>
+                    setLlmForm((prev) => ({
+                      ...prev,
+                      ...p.form,
+                      api_key: prev.api_key,
+                      active: prev.active,
+                    }))
+                  }
+                />
+              ))}
+            </Stack>
             <TextField
               label="Название"
               value={llmForm.name}
               onChange={(e) => setLlmForm({ ...llmForm, name: e.target.value })}
               fullWidth
               required
-              placeholder="OpenAI / DeepSeek / OpenRouter"
+              placeholder="OpenAI / DeepSeek / Qwen 3.8 Max"
             />
             <TextField
               label="Токен (API key)"
@@ -685,11 +735,13 @@ export default function AdminPanel({ token, user, onBack }: Props) {
               onChange={(e) => setLlmForm({ ...llmForm, api_key: e.target.value })}
               fullWidth
               required={llmDialog === "create"}
-              placeholder="sk-..."
+              placeholder={llmForm.provider === "qwen" ? "sk-... (DashScope / DASHSCOPE_API_KEY)" : "sk-..."}
               helperText={
                 llmDialog && llmDialog !== "create" && llmDialog.api_key_set
                   ? `Сейчас: ${llmDialog.api_key_masked} — пусто = не менять`
-                  : undefined
+                  : llmForm.provider === "qwen"
+                    ? "Ключ Alibaba Cloud Model Studio (DashScope)"
+                    : undefined
               }
             />
             <Button size="small" onClick={() => setShowKey((v) => !v)} sx={{ alignSelf: "flex-start" }}>
@@ -700,13 +752,18 @@ export default function AdminPanel({ token, user, onBack }: Props) {
               value={llmForm.model}
               onChange={(e) => setLlmForm({ ...llmForm, model: e.target.value })}
               fullWidth
-              placeholder="gpt-5.6-terra"
+              placeholder="qwen3.8-max"
             />
             <TextField
               label="Base URL"
               value={llmForm.base_url}
               onChange={(e) => setLlmForm({ ...llmForm, base_url: e.target.value })}
               fullWidth
+              helperText={
+                llmForm.provider === "qwen"
+                  ? "intl: dashscope-intl… · cn: https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  : undefined
+              }
             />
             <TextField
               label="Provider"

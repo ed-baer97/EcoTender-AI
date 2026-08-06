@@ -109,6 +109,20 @@ function asGos(row?: AdminTender | null) {
   };
 }
 
+function portalAnnounceUrl(row?: AdminTender | null): string | null {
+  if (!row) return null;
+  const extras = (row.extras || {}) as any;
+  const direct = extras.detail_url || extras.goszakup?.detail_url;
+  if (typeof direct === "string" && direct.startsWith("http")) return direct;
+  const gid = extras.goszakup_id;
+  if (gid != null && String(gid).match(/^\d+$/)) {
+    return `https://goszakup.gov.kz/ru/announce/index/${gid}`;
+  }
+  const m = String(row.external_id || "").match(/^(\d{5,})/);
+  if (m) return `https://goszakup.gov.kz/ru/announce/index/${m[1]}`;
+  return null;
+}
+
 type Props = {
   token: string;
   onRunGoszakup?: () => void;
@@ -288,6 +302,18 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
                 >
                   <TableCell sx={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>
                     {row.external_id}
+                    {portalAnnounceUrl(row) && (
+                      <Box
+                        component="a"
+                        href={portalAnnounceUrl(row)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        sx={{ display: "block", color: "primary.main", fontSize: 11, mt: 0.3 }}
+                      >
+                        открыть →
+                      </Box>
+                    )}
                   </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Typography variant="body2" noWrap title={row.title}>
@@ -353,6 +379,22 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
               {selected.title}
             </Typography>
             <Chip size="small" label={selected.external_id} sx={{ alignSelf: "flex-start" }} />
+            {portalAnnounceUrl(selected) && (
+              <DetailRow
+                label="Ссылка goszakup"
+                value={
+                  <Box
+                    component="a"
+                    href={portalAnnounceUrl(selected)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    sx={{ color: "primary.main", wordBreak: "break-all" }}
+                  >
+                    {portalAnnounceUrl(selected)}
+                  </Box>
+                }
+              />
+            )}
             {detailLoading && <CircularProgress size={24} />}
 
             <Typography variant="subtitle2" color="primary">
@@ -460,16 +502,37 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
               label="Документы / ТС"
               value={
                 asGos(selected).documents.length ? (
-                  <Stack spacing={0.5}>
-                    {asGos(selected).documents.slice(0, 12).map((d: any, idx: number) => (
-                      <Typography key={`${d.url}-${idx}`} variant="caption" sx={{ wordBreak: "break-all" }}>
-                        {d.group_name ? `[${d.group_name}] ` : ""}
-                        {d.name || d.url}
-                        {d.size ? ` · ${Math.round(d.size / 1024)}KB` : ""}
-                        {d.object_key ? ` -> ${d.object_key}` : d.download_error ? ` (err: ${d.download_error})` : ""}
-                      </Typography>
-                    ))}
-                  </Stack>
+                  <Box sx={{ maxHeight: 280, overflow: "auto" }}>
+                    <Stack spacing={1}>
+                      {Object.entries(
+                        asGos(selected).documents.reduce((acc: Record<string, any[]>, d: any) => {
+                          const key = d.group_name || d.kind || "Документы";
+                          (acc[key] ||= []).push(d);
+                          return acc;
+                        }, {})
+                      ).map(([group, docs]) => (
+                        <Box key={group}>
+                          <Typography variant="caption" fontWeight={600} display="block">
+                            {group} ({docs.length})
+                          </Typography>
+                          {docs.map((d: any, idx: number) => (
+                            <Typography key={`${d.url}-${idx}`} variant="caption" display="block" sx={{ wordBreak: "break-all", pl: 1 }}>
+                              {d.lot_number ? `лот ${d.lot_number}: ` : ""}
+                              {d.url ? (
+                                <Box component="a" href={d.url} target="_blank" rel="noopener noreferrer" sx={{ color: "primary.main" }}>
+                                  {d.name || d.url}
+                                </Box>
+                              ) : (
+                                d.name || "—"
+                              )}
+                              {d.size ? ` · ${Math.round(d.size / 1024)}KB` : ""}
+                              {d.object_key ? ` -> ${d.object_key}` : d.download_error ? ` (err: ${d.download_error})` : ""}
+                            </Typography>
+                          ))}
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
                 ) : (
                   "—"
                 )

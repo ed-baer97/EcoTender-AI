@@ -33,6 +33,12 @@
 
 Парсит публичный портал: [поиск объявлений](https://goszakup.gov.kz/ru/search/announce).
 
+По умолчанию берём **завершённые** закупки (не открытый приём заявок):
+
+- `filter[status][]=350` — статус объявления «Завершено»;
+- `filter[signs][]=is_not_active` — «Неактивные/завершенные»;
+- после детализации: договор в статусе **Действует** или **Исполнен** (в т.ч. «Передан.Действует» / «Передан.Исполнен»).
+
 ```env
 GOSZAKUP_USE_PLAYWRIGHT=true
 GOSZAKUP_PW_KEYWORD=экология
@@ -40,6 +46,10 @@ GOSZAKUP_PW_REGION_ONLY=mangystau
 GOSZAKUP_PW_BROWSE_RECENT=false
 GOSZAKUP_PW_MAX_ITEMS=30
 GOSZAKUP_PW_FETCH_DETAIL=true
+GOSZAKUP_PW_FILTER_STATUS=350
+GOSZAKUP_PW_FILTER_SIGNS=is_not_active
+GOSZAKUP_PW_CONTRACT_STATUSES=действует,исполнен
+GOSZAKUP_PW_REQUIRE_CONTRACT_STATUS=true
 # GOSZAKUP_PW_OFFLINE=true   # только fixtures HTML, без браузера
 ```
 

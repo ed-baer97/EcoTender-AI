@@ -158,6 +158,10 @@ services:
       RUNTIME_CONFIG_PATH: /data/runtime/config.json
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-${JWT_SECRET:-change-me-in-production}}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-ecotender-raw}
       SERVICE_PORT: 8004
     ports:
       - "8004:8004"
@@ -168,6 +172,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   ingestion-worker:
@@ -209,6 +215,17 @@ services:
       GOSZAKUP_PW_FILTER_AMOUNT_TO: ${GOSZAKUP_PW_FILTER_AMOUNT_TO:-}
       GOSZAKUP_PW_FILTER_TRADE_TYPE: ${GOSZAKUP_PW_FILTER_TRADE_TYPE:-r}
       GOSZAKUP_PW_FILTER_TYPE: ${GOSZAKUP_PW_FILTER_TYPE:-}
+      # 350 = Завершено; is_not_active = Неактивные/завершенные (не «прием заявок»)
+      GOSZAKUP_PW_FILTER_STATUS: ${GOSZAKUP_PW_FILTER_STATUS:-350}
+      GOSZAKUP_PW_FILTER_SIGNS: ${GOSZAKUP_PW_FILTER_SIGNS:-is_not_active}
+      # Договор: Действует / Исполнен (+ Передан.*)
+      GOSZAKUP_PW_CONTRACT_STATUSES: ${GOSZAKUP_PW_CONTRACT_STATUSES:-действует,исполнен}
+      GOSZAKUP_PW_REQUIRE_CONTRACT_STATUS: ${GOSZAKUP_PW_REQUIRE_CONTRACT_STATUS:-true}
+      GOSZAKUP_PW_REQUIRE_CONTRACT_ROWS: ${GOSZAKUP_PW_REQUIRE_CONTRACT_ROWS:-false}
+      GOSZAKUP_PW_DOWNLOAD_DOCS: ${GOSZAKUP_PW_DOWNLOAD_DOCS:-true}
+      GOSZAKUP_PW_MAX_DOCS: ${GOSZAKUP_PW_MAX_DOCS:-8}
+      GOSZAKUP_PW_EXTRACT_ON_INGEST: ${GOSZAKUP_PW_EXTRACT_ON_INGEST:-false}
+      GOSZAKUP_PW_TAB_WAIT_MS: ${GOSZAKUP_PW_TAB_WAIT_MS:-400}
       GOSZAKUP_PW_FILTER_START_DATE_FROM: ${GOSZAKUP_PW_FILTER_START_DATE_FROM:-}
       GOSZAKUP_PW_FILTER_START_DATE_TO: ${GOSZAKUP_PW_FILTER_START_DATE_TO:-}
       GOSZAKUP_PW_FILTER_END_DATE_FROM: ${GOSZAKUP_PW_FILTER_END_DATE_FROM:-}
