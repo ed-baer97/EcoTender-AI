@@ -83,6 +83,7 @@ function gosExtras(t?: Tender | null) {
     docs: gos.documents || [],
     tabs: gos.tabs || [],
     lots: gos.lots || [],
+    kv: gos.kv || {},
   };
 }
 
@@ -432,6 +433,33 @@ export default function App() {
                 <Typography variant="caption" color="text.secondary">
                   docs: {gosExtras(selected).docs.length} · tabs: {gosExtras(selected).tabs.length} · lots: {gosExtras(selected).lots.length}
                 </Typography>
+                {Object.keys(gosExtras(selected).kv).length > 0 && (
+                  <Box sx={{ bgcolor: "action.hover", p: 1.2, borderRadius: 1 }}>
+                    <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
+                      Общие сведения
+                    </Typography>
+                    {Object.entries(gosExtras(selected).kv)
+                      .slice(0, 8)
+                      .map(([k, v]) => (
+                        <Typography key={k} variant="caption" display="block">
+                          {k}: {String(v)}
+                        </Typography>
+                      ))}
+                  </Box>
+                )}
+                {gosExtras(selected).docs.length > 0 && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
+                      Документы / спецификация
+                    </Typography>
+                    {gosExtras(selected).docs.slice(0, 6).map((d: any, idx: number) => (
+                      <Typography key={`${d.url || d.name}-${idx}`} variant="caption" display="block" sx={{ wordBreak: "break-all" }}>
+                        {d.group_name ? `[${d.group_name}] ` : ""}
+                        {d.name || d.url}
+                      </Typography>
+                    ))}
+                  </Box>
+                )}
                 {Object.keys(gosExtras(selected).filters).length > 0 && (
                   <Typography variant="caption" color="text.secondary">
                     search: {JSON.stringify(gosExtras(selected).filters)}

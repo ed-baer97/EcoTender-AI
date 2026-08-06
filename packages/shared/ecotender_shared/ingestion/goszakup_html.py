@@ -176,7 +176,115 @@ def parse_detail_overview(html: str, *, announce_id: str) -> dict[str, Any]:
     kv = _table_kv(soup)
     detail = parse_announce_detail(html, announce_id=announce_id)
     detail["kv"] = kv
+    detail["overview_tables"] = parse_overview_tables(html)
     return detail
+
+
+def parse_overview_tables(html: str) -> list[dict[str, Any]]:
+    """Extract labeled th/td key-value tables (Общие сведения, Информация об организаторе, …)."""
+    soup = BeautifulSoup(html, "lxml")
+    sections: list[dict[str, Any]] = []
+    for table in soup.select("table"):
+        rows_kv: list[dict[str, str]] = []
+        for row in table.select("tr"):
+            cells = row.find_all(["th", "td"])
+            if len(cells) < 2:
+                continue
+            # Skip wide data grids (lots/docs) — keep 2-column label/value tables.
+            if len(cells) > 3:
+                rows_kv = []
+                break
+            key = _clean(cells[0].get_text(" ", strip=True))
+            val = _clean(cells[1].get_text(" ", strip=True))
+            if key and val and key.lower() != val.lower():
+                rows_kv.append({"label": key, "value": val})
+        if len(rows_kv) >= 2:
+            heading = None
+            prev = table.find_previous(["h3", "h4", "h5", "legend", "strong"])
+            if prev:
+                heading = _clean(prev.get_text(" ", strip=True)) or None
+            sections.append({"title": heading, "rows": rows_kv})
+    return sections
+
+
+_ACTION_MODAL_RE = re.compile(r"actionModalShowFiles\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", re.I)
+
+
+def parse_documentation_groups(html: str) -> list[dict[str, Any]]:
+    """Parse Документация tab rows with actionModalShowFiles(announce, group)."""
+    soup = BeautifulSoup(html, "lxml")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in soup.select("table tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 1:
+            continue
+        onclick = ""
+        for el in row.select("[onclick], button, a"):
+            onclick = el.get("onclick") or ""
+            if "actionModalShowFiles" in onclick:
+                break
+        m = _ACTION_MODAL_RE.search(onclick)
+        if not m:
+            # Also scan raw row HTML for the call.
+            m = _ACTION_MODAL_RE.search(str(row))
+        if not m:
+            continue
+        announce_id, group_id = m.group(1), m.group(2)
+        key = f"{announce_id}:{group_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        name = _clean(cells[0].get_text(" ", strip=True))
+        flag = _clean(cells[1].get_text(" ", strip=True)) if len(cells) > 1 else ""
+        out.append(
+            {
+                "name": name or f"group_{group_id}",
+                "group_id": group_id,
+                "announce_id": announce_id,
+                "required_flag": flag,
+                "kind": "documentation_group",
+            }
+        )
+    return out
+
+
+def parse_modal_files(html: str, *, base_url: str = PORTAL_BASE) -> list[dict[str, Any]]:
+    """Parse #ModalShowFilesBody / actionAjaxModalShowFiles response table."""
+    soup = BeautifulSoup(html, "lxml")
+    out: list[dict[str, Any]] = []
+    for table in soup.select("table"):
+        rows = table.select("tr")
+        if len(rows) < 2:
+            continue
+        headers = [_clean(c.get_text(" ", strip=True)) for c in rows[0].find_all(["th", "td"])]
+        header_blob = " ".join(headers).lower()
+        if "документ" not in header_blob and not any(
+            a.get("href") and "download_file" in (a.get("href") or "") for a in table.select("a[href]")
+        ):
+            continue
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"])
+            vals = [_clean(c.get_text(" ", strip=True)) for c in cells]
+            link = row.select_one("a[href]")
+            if link is None:
+                continue
+            href = link.get("href") or ""
+            abs_href = urljoin(base_url, href)
+            item = {headers[i] if i < len(headers) else f"col_{i}": vals[i] for i in range(len(vals))}
+            out.append(
+                {
+                    "name": _clean(link.get_text(" ", strip=True)) or abs_href,
+                    "url": abs_href,
+                    "lot_number": next((v for k, v in item.items() if "лот" in k.lower()), vals[0] if vals else None),
+                    "author": next((v for k, v in item.items() if "автор" in k.lower()), None),
+                    "organization": next((v for k, v in item.items() if "организац" in k.lower()), None),
+                    "created_at": next((v for k, v in item.items() if "дата" in k.lower()), None),
+                    "row": vals,
+                    "kind": "specification" if any(x in (link.get_text() or "").lower() for x in ("тс", "спецификац", "docx", "pdf")) else "document",
+                }
+            )
+    return out
 
 
 def parse_documents_table(html: str, *, base_url: str = PORTAL_BASE) -> list[dict[str, Any]]:
@@ -196,6 +304,9 @@ def parse_documents_table(html: str, *, base_url: str = PORTAL_BASE) -> list[dic
             abs_href = urljoin(base_url, href)
             if abs_href in seen:
                 continue
+            # Skip signature-only links; modal file parser handles those separately.
+            if "signature" in abs_href.lower() and "download_file" not in abs_href.lower():
+                continue
             seen.add(abs_href)
             cell_texts = [_clean(c.get_text(" ", strip=True)) for c in cells]
             out.append(
@@ -211,7 +322,7 @@ def parse_documents_table(html: str, *, base_url: str = PORTAL_BASE) -> list[dic
     for link in soup.select("a[href]"):
         href = link.get("href") or ""
         low = href.lower()
-        if not any(x in low for x in (".pdf", ".doc", ".docx", ".xls", ".xlsx", "download", "file")):
+        if not any(x in low for x in (".pdf", ".doc", ".docx", ".xls", ".xlsx", "download_file", "download", "file")):
             continue
         abs_href = urljoin(base_url, href)
         if abs_href in seen:
@@ -236,16 +347,30 @@ def parse_lots_table(html: str) -> list[dict[str, Any]]:
         if len(rows) < 2:
             continue
         header_blob = " ".join(rows[0]).lower()
-        if "лот" not in header_blob or not any(k in header_blob for k in ("наимен", "сумма", "кол-во")):
+        if "лот" not in header_blob and "наимен" not in header_blob:
+            continue
+        if not any(k in header_blob for k in ("наимен", "сумма", "кол-во", "заказчик", "цена")):
             continue
         headers = rows[0]
         for row in rows[1:]:
             if len(row) < 2:
                 continue
             item = {headers[i] if i < len(headers) else f"col_{i}": row[i] for i in range(len(row))}
-            name = next((v for k, v in item.items() if "наимен" in k.lower()), row[1] if len(row) > 1 else row[0])
-            amount = next((_parse_amount(v) for k, v in item.items() if "сум" in k.lower()), None)
-            out.append({"name": name, "amount": amount, "raw": item})
+            name = next(
+                (v for k, v in item.items() if "наимен" in k.lower()),
+                row[3] if len(row) > 3 else (row[1] if len(row) > 1 else row[0]),
+            )
+            amount = next(
+                (
+                    _parse_amount(v)
+                    for k, v in item.items()
+                    if any(x in k.lower() for x in ("планов", "сумма", "цена"))
+                    and _parse_amount(v) is not None
+                ),
+                None,
+            )
+            lot_no = next((v for k, v in item.items() if "номер лота" in k.lower() or k.lower() == "№ лота"), None)
+            out.append({"name": name, "amount": amount, "lot_number": lot_no, "raw": item})
     return out
 
 

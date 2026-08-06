@@ -25,8 +25,10 @@ from ecotender_shared.ingestion.goszakup_html import (
     parse_bidders_table,
     parse_contracts_table,
     parse_detail_overview,
+    parse_documentation_groups,
     parse_documents_table,
     parse_lots_table,
+    parse_modal_files,
     parse_results_table,
     parse_search_list,
     parse_search_next_page,
@@ -137,6 +139,7 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
         self.max_items = max_items or int(os.getenv("GOSZAKUP_PW_MAX_ITEMS", "50"))
         self.max_pages = int(os.getenv("GOSZAKUP_PW_MAX_PAGES", "5"))
         self.eco_only = _env_bool("GOSZAKUP_PW_ECO_ONLY", True)
+        self.min_amount = float(os.getenv("GOSZAKUP_PW_FILTER_AMOUNT_FROM") or os.getenv("GOSZAKUP_PW_MIN_AMOUNT") or "1000000")
         # Default: only Мангистауская область (hackathon scope). Set GOSZAKUP_PW_REGION_ONLY=off to disable.
         region_only = (os.getenv("GOSZAKUP_PW_REGION_ONLY", "mangystau") or "mangystau").strip().lower()
         self.region_only = None if region_only in ("", "0", "false", "no", "off", "all", "none") else region_only
@@ -210,18 +213,19 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
         configs: list[SearchConfig] = []
         mangystau_customer = os.getenv("GOSZAKUP_PW_FILTER_CUSTOMER") or "Мангистау"
         mangystau_kato = os.getenv("GOSZAKUP_PW_FILTER_KATO") or MANGYSTAU_KATO
+        amount_from = os.getenv("GOSZAKUP_PW_FILTER_AMOUNT_FROM") or "1000000"
         if self.region_only in ("mangystau", "man", "kz-man"):
-            # Official region facet on the portal.
+            # Official region facet on the portal + amount floor.
             configs.append(
                 SearchConfig(
-                    filters={"kato": mangystau_kato},
+                    filters={"kato": mangystau_kato, "amount_from": amount_from},
                     matched_keywords=["мангистау", "актау", "курык", "жанаозен"],
                     preset="mangystau_kato",
                 )
             )
             configs.append(
                 SearchConfig(
-                    filters={"customer": mangystau_customer},
+                    filters={"customer": mangystau_customer, "amount_from": amount_from},
                     matched_keywords=["мангистау", "актау", "курык", "жанаозен"],
                     preset="mangystau_customer",
                 )
@@ -229,7 +233,7 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
             for name_term in ("мангистау", "актау", "курык", "жанаозен"):
                 configs.append(
                     SearchConfig(
-                        filters={"name": name_term},
+                        filters={"name": name_term, "amount_from": amount_from},
                         matched_keywords=[name_term],
                         preset=f"mangystau_name_{name_term}",
                     )
@@ -284,6 +288,15 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
             if kw and kw.lower() in blob.lower()
         ]
         item["matched_keywords"] = matched
+
+        amount = item.get("total_sum")
+        try:
+            amount_f = float(amount) if amount is not None else None
+        except (TypeError, ValueError):
+            amount_f = None
+        if amount_f is not None and self.min_amount > 0 and amount_f < self.min_amount:
+            return False
+
         if self.region_only in ("mangystau", "man", "kz-man"):
             preset = (self._active_search_config.preset if self._active_search_config else None) or ""
             filters = (self._active_search_config.filters if self._active_search_config else {}) or {}
@@ -370,6 +383,8 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
             detail_html = page.content()
             tabs: list[dict[str, Any]] = []
             documents: list[dict[str, Any]] = []
+            lots: list[dict[str, Any]] = []
+            documentation_groups: list[dict[str, Any]] = []
             raw_assets: list[dict[str, Any]] = [
                 {
                     "kind": "detail_html",
@@ -381,8 +396,9 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
                 }
             ]
 
-            tab_loc = page.locator("[role='tab'], .nav-tabs a, .tabs a, .nav li a")
+            tab_loc = page.locator(".nav-tabs a, .nav li a, [role='tab']")
             seen_names: set[str] = set()
+            tab_html_by_name: dict[str, str] = {}
             for idx in range(min(tab_loc.count(), 12)):
                 loc = tab_loc.nth(idx)
                 try:
@@ -394,10 +410,11 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
                 seen_names.add(name)
                 try:
                     loc.click(timeout=4000)
-                    page.wait_for_timeout(800)
+                    page.wait_for_timeout(1200)
                 except Exception:
                     pass
                 tab_html = page.content()
+                tab_html_by_name[name.lower()] = tab_html
                 tab_slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in name).strip("_") or f"tab_{idx}"
                 tabs.append({"name": name, "slug": tab_slug, "html_len": len(tab_html), "source_url": page.url})
                 raw_assets.append(
@@ -412,32 +429,115 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
                 )
                 for doc in parse_documents_table(tab_html, base_url=self.portal_base):
                     documents.append({**doc, "tab_name": name, "tab_slug": tab_slug})
+                if "лот" in name.lower():
+                    lots.extend(parse_lots_table(tab_html))
+                if "документ" in name.lower():
+                    documentation_groups = parse_documentation_groups(tab_html)
 
-            # Fallback: documents directly from detail page if no tabs provided any.
+            # Explicit documents tab URL fallback if nav click missed groups.
+            if not documentation_groups:
+                docs_url = f"{self.portal_base}/ru/announce/index/{announce_id}?tab=documents"
+                try:
+                    page.goto(docs_url, wait_until="domcontentloaded")
+                    page.wait_for_timeout(1500)
+                    docs_html = page.content()
+                    documentation_groups = parse_documentation_groups(docs_html)
+                    for doc in parse_documents_table(docs_html, base_url=self.portal_base):
+                        documents.append({**doc, "tab_name": "Документация", "tab_slug": "dokumentatsiya"})
+                    raw_assets.append(
+                        {
+                            "kind": "tab_html",
+                            "name": f"announce_{announce_id}_dokumentatsiya.html",
+                            "content_type": "text/html; charset=utf-8",
+                            "source_url": docs_url,
+                            "tab_name": "Документация",
+                            "body_b64": base64.b64encode(docs_html.encode("utf-8")).decode("ascii"),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            # Fetch ModalShowFiles for each documentation group (Техническая спецификация, …).
+            for group in documentation_groups:
+                group_id = group.get("group_id")
+                if not group_id:
+                    continue
+                modal_url = f"{self.portal_base}/ru/announce/actionAjaxModalShowFiles/{announce_id}/{group_id}"
+                try:
+                    resp = page.context.request.get(modal_url, timeout=20000)
+                    if not resp.ok:
+                        group["modal_error"] = f"http_{resp.status}"
+                        continue
+                    modal_html = resp.text()
+                    group["modal_url"] = modal_url
+                    raw_assets.append(
+                        {
+                            "kind": "modal_html",
+                            "name": f"announce_{announce_id}_files_{group_id}.html",
+                            "content_type": "text/html; charset=utf-8",
+                            "source_url": modal_url,
+                            "tab_name": group.get("name") or "Документация",
+                            "body_b64": base64.b64encode(modal_html.encode("utf-8")).decode("ascii"),
+                        }
+                    )
+                    modal_docs = parse_modal_files(modal_html, base_url=self.portal_base)
+                    for doc in modal_docs:
+                        documents.append(
+                            {
+                                **doc,
+                                "tab_name": "Документация",
+                                "tab_slug": "dokumentatsiya",
+                                "group_id": group_id,
+                                "group_name": group.get("name"),
+                                "kind": "specification"
+                                if "спецификац" in (group.get("name") or "").lower()
+                                or "тс" in (doc.get("name") or "").lower()
+                                else doc.get("kind") or "document",
+                            }
+                        )
+                except Exception as exc:
+                    group["modal_error"] = str(exc)
+
             if not documents:
                 for doc in parse_documents_table(detail_html, base_url=self.portal_base):
                     documents.append({**doc, "tab_name": "detail", "tab_slug": "detail"})
+            if not lots:
+                lots = parse_lots_table(detail_html)
+                for html in tab_html_by_name.values():
+                    if not lots:
+                        lots = parse_lots_table(html)
+
+            # Deduplicate documents by URL.
+            dedup: dict[str, dict[str, Any]] = {}
+            for doc in documents:
+                key = str(doc.get("url") or doc.get("name") or id(doc))
+                dedup.setdefault(key, doc)
+            documents = list(dedup.values())
 
             for idx, doc in enumerate(documents):
+                url_doc = doc.get("url")
+                if not url_doc or not str(url_doc).startswith("http"):
+                    continue
                 try:
-                    with page.expect_download(timeout=3000):
-                        pass
-                except Exception:
-                    pass
-                try:
-                    # Reuse browser session/cookies via page.context.request when possible.
-                    resp = page.context.request.get(doc["url"], timeout=15000)
+                    resp = page.context.request.get(url_doc, timeout=30000)
                     if resp.ok:
                         body = resp.body()
-                        doc["content_type"] = resp.headers.get("content-type") or "application/octet-stream"
+                        # Skip tiny HTML error pages masquerading as downloads.
+                        ctype = resp.headers.get("content-type") or "application/octet-stream"
+                        if "text/html" in ctype and len(body) < 5000 and b"download_file" not in body[:200]:
+                            doc["download_error"] = "html_instead_of_file"
+                            continue
+                        doc["content_type"] = ctype
                         doc["size"] = len(body)
+                        fname = doc.get("name") or f"announce_{announce_id}_doc_{idx}"
                         raw_assets.append(
                             {
                                 "kind": "document",
-                                "name": f"announce_{announce_id}_doc_{idx}",
-                                "content_type": doc["content_type"],
-                                "source_url": doc["url"],
+                                "name": str(fname),
+                                "content_type": ctype,
+                                "source_url": url_doc,
                                 "tab_name": doc.get("tab_name"),
+                                "group_name": doc.get("group_name"),
                                 "body_b64": base64.b64encode(body).decode("ascii"),
                             }
                         )
@@ -451,6 +551,8 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
             "detail_html": detail_html,
             "tabs": tabs,
             "documents": documents,
+            "lots": lots,
+            "documentation_groups": documentation_groups,
             "raw_assets": raw_assets,
             "detail_url": url,
         }
@@ -557,11 +659,13 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
             else:
                 bundle = self._fetch_bundle_playwright(ref, detail_url=(stub or {}).get("detail_url"))
                 item = parse_detail_overview(bundle["detail_html"], announce_id=ref)
+                lots = bundle.get("lots") or parse_lots_table(bundle["detail_html"])
                 item["goszakup_bundle"] = {
                     "detail_url": bundle["detail_url"],
                     "tabs": bundle["tabs"],
                     "documents": bundle["documents"],
-                    "lots": parse_lots_table(bundle["detail_html"]),
+                    "documentation_groups": bundle.get("documentation_groups") or [],
+                    "lots": lots,
                     "bidders": parse_bidders_table(bundle["detail_html"]),
                     "protocols": parse_results_table(bundle["detail_html"]),
                     "contracts": parse_contracts_table(bundle["detail_html"], base_url=self.portal_base),
@@ -624,7 +728,9 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
         protocols = bundle.get("protocols") or []
         contracts = bundle.get("contracts") or []
         tabs = bundle.get("tabs") or []
+        documentation_groups = bundle.get("documentation_groups") or []
         kv = data.get("kv") or {}
+        overview_tables = data.get("overview_tables") or []
         winner_name = None
         for row in protocols:
             if row.get("winner_name"):
@@ -682,9 +788,11 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
                     "tabs": tabs,
                     "lots": lots,
                     "documents": documents,
+                    "documentation_groups": documentation_groups,
                     "bidders": bidders,
                     "protocols": protocols,
                     "contracts": contracts,
+                    "overview_tables": overview_tables,
                     "raw_tab_stats": {
                         "tabs_count": len(tabs),
                         "documents_count": len(documents),
@@ -692,6 +800,9 @@ class KazakhstanGoszakupPlaywrightAdapter(SourceAdapter):
                         "bidders_count": len(bidders),
                         "protocols_count": len(protocols),
                         "contracts_count": len(contracts),
+                        "spec_docs_count": len(
+                            [d for d in documents if d.get("kind") == "specification" or "спецификац" in (d.get("group_name") or "").lower()]
+                        ),
                     },
                     "kv": kv,
                     "raw_assets": bundle.get("raw_assets") or [],

@@ -198,6 +198,14 @@ def crawl_source(self, source_code: str = "KZ_GOSZAKUP_OWS_V3") -> dict[str, Any
                 raw = asyncio.run(adapter.fetch(ref))
             normalized = adapter.normalize(raw)
             payload = normalized.model_dump(mode="json")
+            min_amount = float(os.getenv("GOSZAKUP_PW_FILTER_AMOUNT_FROM") or os.getenv("GOSZAKUP_PW_MIN_AMOUNT") or "0")
+            amount = payload.get("amount")
+            if min_amount > 0 and amount is not None:
+                try:
+                    if float(amount) < min_amount:
+                        continue
+                except (TypeError, ValueError):
+                    pass
             payload = _persist_raw_assets(payload)
             market_est = _estimate_market(payload)
             if market_est is not None and not payload.get("market_amount_est"):

@@ -6,8 +6,11 @@ from ecotender_shared.ingestion.goszakup_html import (
     parse_announce_detail,
     parse_bidders_table,
     parse_contracts_table,
+    parse_documentation_groups,
     parse_documents_table,
     parse_lots_table,
+    parse_modal_files,
+    parse_overview_tables,
     parse_results_table,
     parse_search_list,
 )
@@ -60,3 +63,20 @@ def test_parse_goszakup_tab_tables():
     assert bidders[0]["identifier"] == "021140002114"
     assert results[0]["winner_name"] == "КаспийЭкоСервис LLP"
     assert contracts[0]["supplier"] == "КаспийЭкоСервис LLP"
+
+
+def test_parse_overview_and_modal_specification():
+    detail = (FIXTURES / "goszakup_announce_detail.html").read_text(encoding="utf-8")
+    sections = parse_overview_tables(detail)
+    assert sections
+    labels = {r["label"] for s in sections for r in s["rows"]}
+    assert "Организатор" in labels or "Юр. адрес организатора" in labels
+
+    modal = (FIXTURES / "goszakup_modal_files.html").read_text(encoding="utf-8")
+    groups = parse_documentation_groups(modal)
+    assert any(g["group_id"] == "102" and "спецификац" in g["name"].lower() for g in groups)
+    files = parse_modal_files(modal)
+    assert files
+    assert "Тупкараган" in files[0]["name"]
+    assert "download_file" in files[0]["url"]
+

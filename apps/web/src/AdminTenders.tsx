@@ -104,6 +104,8 @@ function asGos(row?: AdminTender | null) {
     contracts: gos.contracts || [],
     storedAssets: gos.stored_assets || [],
     stats: gos.raw_tab_stats || {},
+    kv: gos.kv || {},
+    overview: gos.overview_tables || [],
   };
 }
 
@@ -406,11 +408,37 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
             <Typography variant="subtitle2" color="primary">
               Goszakup crawl
             </Typography>
+            <DetailRow
+              label="Общие сведения"
+              value={
+                Object.keys(asGos(selected).kv).length ? (
+                  <Stack spacing={0.4}>
+                    {Object.entries(asGos(selected).kv)
+                      .slice(0, 12)
+                      .map(([k, v]) => (
+                        <Typography key={k} variant="caption">
+                          <strong>{k}:</strong> {String(v)}
+                        </Typography>
+                      ))}
+                  </Stack>
+                ) : asGos(selected).overview.length ? (
+                  <Stack spacing={0.4}>
+                    {asGos(selected).overview[0].rows?.slice(0, 12).map((r: any) => (
+                      <Typography key={r.label} variant="caption">
+                        <strong>{r.label}:</strong> {r.value}
+                      </Typography>
+                    ))}
+                  </Stack>
+                ) : (
+                  "—"
+                )
+              }
+            />
             <DetailRow label="Фильтры поиска" value={JSON.stringify(asGos(selected).filters || {})} />
             <DetailRow label="Matched keywords" value={(asGos(selected).keywords || []).join(", ") || "—"} />
             <DetailRow
               label="Статистика"
-              value={`tabs=${asGos(selected).stats.tabs_count || 0}, docs=${asGos(selected).stats.documents_count || 0}, lots=${asGos(selected).stats.lots_count || 0}`}
+              value={`tabs=${asGos(selected).stats.tabs_count || 0}, docs=${asGos(selected).stats.documents_count || 0}, lots=${asGos(selected).stats.lots_count || 0}, specs=${asGos(selected).stats.spec_docs_count || 0}`}
             />
             <DetailRow
               label="Вкладки"
@@ -429,13 +457,15 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
               }
             />
             <DetailRow
-              label="Документы"
+              label="Документы / ТС"
               value={
                 asGos(selected).documents.length ? (
                   <Stack spacing={0.5}>
-                    {asGos(selected).documents.slice(0, 8).map((d: any, idx: number) => (
+                    {asGos(selected).documents.slice(0, 12).map((d: any, idx: number) => (
                       <Typography key={`${d.url}-${idx}`} variant="caption" sx={{ wordBreak: "break-all" }}>
+                        {d.group_name ? `[${d.group_name}] ` : ""}
                         {d.name || d.url}
+                        {d.size ? ` · ${Math.round(d.size / 1024)}KB` : ""}
                         {d.object_key ? ` -> ${d.object_key}` : d.download_error ? ` (err: ${d.download_error})` : ""}
                       </Typography>
                     ))}
@@ -452,6 +482,7 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
                   <Stack spacing={0.5}>
                     {asGos(selected).lots.slice(0, 6).map((lot: any, idx: number) => (
                       <Typography key={`${lot.name}-${idx}`} variant="caption">
+                        {lot.lot_number ? `${lot.lot_number}: ` : ""}
                         {lot.name} {lot.amount != null ? `· ${fmtMoney(lot.amount, selected.currency || "KZT")}` : ""}
                       </Typography>
                     ))}
