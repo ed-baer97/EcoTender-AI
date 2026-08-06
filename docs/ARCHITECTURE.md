@@ -379,4 +379,4 @@ EcoTender AI/
 └── docs/
 ```
 
-См. также: [ER_DIAGRAM.md](ER_DIAGRAM.md), [ML_RISK_ENGINE.md](ML_RISK_ENGINE.md), [API.md](API.md), [MVP_48H.md](MVP_48H.md), [SCALING.md](SCALING.md).
+См. также: [ER_DIAGRAM.md](ER_DIAGRAM.md), [ML_RISK_ENGINE.md](ML_RISK_ENGINE.md), [API.md](API.md), [SCALING.md](SCALING.md).
