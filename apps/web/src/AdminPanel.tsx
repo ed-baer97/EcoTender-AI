@@ -66,6 +66,7 @@ type IngestTask = {
     percent?: number;
     message?: string;
     pages_ok?: number;
+    pages_skip?: number;
     pages_fail?: number;
   };
   result?: any;

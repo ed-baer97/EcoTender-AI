@@ -513,9 +513,9 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
                       ).map(([group, docs]) => (
                         <Box key={group}>
                           <Typography variant="caption" fontWeight={600} display="block">
-                            {group} ({docs.length})
+                            {group} ({(docs as any[]).length})
                           </Typography>
-                          {docs.map((d: any, idx: number) => (
+                          {(docs as any[]).map((d: any, idx: number) => (
                             <Typography key={`${d.url}-${idx}`} variant="caption" display="block" sx={{ wordBreak: "break-all", pl: 1 }}>
                               {d.lot_number ? `лот ${d.lot_number}: ` : ""}
                               {d.url ? (

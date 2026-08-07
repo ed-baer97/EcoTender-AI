@@ -719,9 +719,9 @@ export default function App() {
                       ).map(([group, docs]) => (
                         <Box key={group} mb={1}>
                           <Typography variant="caption" fontWeight={600} display="block">
-                            {group} · {docs.length}
+                            {group} · {(docs as any[]).length}
                           </Typography>
-                          {docs.map((d: any, idx: number) => (
+                          {(docs as any[]).map((d: any, idx: number) => (
                             <Typography
                               key={`${d.url || d.name}-${idx}`}
                               variant="caption"
