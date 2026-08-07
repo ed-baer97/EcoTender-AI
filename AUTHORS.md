@@ -1,6 +1,12 @@
-# Авторы проекта EcoTender AI
+# Авторы / Authors / Авторлар — EcoTender AI
 
-Caspian Hackathon 2026 · репозиторий: https://github.com/ed-baer97/EcoTender-AI
+**Язык / Language / Тіл:** [Русский](#русский) · [English](#english) · [Қазақша](#қазақша)
+
+Caspian Hackathon 2026 · https://github.com/ed-baer97/EcoTender-AI
+
+---
+
+## Русский
 
 | Роль | ФИО / ник | Контакт |
 |------|-----------|---------|
@@ -9,8 +15,33 @@ Caspian Hackathon 2026 · репозиторий: https://github.com/ed-baer97/E
 | Data / ingestion | _(указать)_ | |
 | Product | _(указать)_ | |
 
-**Команда (официальное название на хакатоне):** _(указать)_
+**Команда:** _(указать)_  
+**Владелец репозитория:** [ed-baer97](https://github.com/ed-baer97)
 
-**Владелец GitHub-репозитория:** [ed-baer97](https://github.com/ed-baer97)
+---
 
-> Заполните таблицу перед публикацией репозитория.
+## English
+
+| Role | Name / handle | Contact |
+|------|---------------|---------|
+| Lead / backend · AI | _(fill in)_ | |
+| Frontend · GIS UI | _(fill in)_ | |
+| Data / ingestion | _(fill in)_ | |
+| Product | _(fill in)_ | |
+
+**Team name:** _(fill in)_  
+**Repository owner:** [ed-baer97](https://github.com/ed-baer97)
+
+---
+
+## Қазақша
+
+| Рөл | Аты-жөні / ник | Байланыс |
+|-----|----------------|----------|
+| Lead / backend · AI | _(толтыру)_ | |
+| Frontend · GIS UI | _(толтыру)_ | |
+| Data / ingestion | _(толтыру)_ | |
+| Product | _(толтыру)_ | |
+
+**Команда атауы:** _(толтыру)_  
+**Репозиторий иесі:** [ed-baer97](https://github.com/ed-baer97)
