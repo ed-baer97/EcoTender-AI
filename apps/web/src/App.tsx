@@ -479,14 +479,36 @@ export default function App() {
       return;
     }
 
+    // Show list/map chip score immediately so the drawer is never blank while scoring.
+    if (t.risk_score != null) {
+      setRisk({
+        risk_score: t.risk_score,
+        risk_band: t.risk_band || "medium",
+        explanation: "Считаем полный Risk Score…",
+        explanation_meta: { source: "tender_row" },
+      });
+    }
+
     setRiskBusy(true);
     try {
       const q = opts?.force ? "?force=true" : "";
-      const res = await fetch(`${API}/tenders/${ref}/risk${q}`, { method: "POST" });
+      const res = await fetch(`${API}/tenders/${encodeURIComponent(ref)}/risk${q}`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
-        setRisk(data.risk);
-        if (data.tender) setSelected({ ...t, ...data.tender });
+        if (data.risk && data.risk.risk_score != null) {
+          setRisk(data.risk);
+          if (data.tender) setSelected({ ...t, ...data.tender });
+        } else if (t.risk_score == null) {
+          setError("Risk API вернул пустой ответ");
+        }
+      } else {
+        const errBody = await res.json().catch(() => null);
+        const detail =
+          typeof errBody?.detail === "string"
+            ? errBody.detail
+            : `Не удалось рассчитать Risk Score (${res.status})`;
+        setError(detail);
+        if (t.risk_score == null) setRisk(null);
       }
       if (t.winner_name) {
         const cRes = await fetch(`${API}/contractors/${encodeURIComponent(t.winner_name)}`);
@@ -494,6 +516,7 @@ export default function App() {
       }
     } catch {
       setError("Не удалось рассчитать Risk Score");
+      if (t.risk_score == null) setRisk(null);
     } finally {
       setRiskBusy(false);
     }

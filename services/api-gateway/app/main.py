@@ -618,7 +618,11 @@ def _risk_from_saved_cache(tender: dict[str, Any], cached: dict[str, Any]) -> di
 async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
     async with httpx.AsyncClient(timeout=120.0) as client:
         t = await client.get(f"{SERVICES['tender']}/v1/tenders/{tender_ref}")
+        if t.status_code >= 400:
+            raise HTTPException(status_code=t.status_code, detail=f"tender lookup failed: {t.text[:200]}")
         tender = t.json()
+        if not isinstance(tender, dict) or not tender.get("external_id"):
+            raise HTTPException(status_code=502, detail="invalid tender payload from tender-service")
         extras = tender.get("extras") if isinstance(tender.get("extras"), dict) else {}
         cached = extras.get("llm_explain") if isinstance(extras, dict) else None
         if (
@@ -639,7 +643,12 @@ async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
         }
         logger.info("[risk] score proxy start tender_ref=%s force=%s", tender_ref, force)
         r = await client.post(f"{SERVICES['risk']}/v1/score", json=payload)
+        if r.status_code >= 400:
+            logger.error("[risk] score upstream failed tender_ref=%s http=%s body=%s", tender_ref, r.status_code, r.text[:300])
+            raise HTTPException(status_code=502, detail=f"risk-engine failed: {r.text[:200]}")
         risk = r.json()
+        if not isinstance(risk, dict) or risk.get("risk_score") is None:
+            raise HTTPException(status_code=502, detail="risk-engine returned empty score")
         meta = risk.get("explanation_meta") if isinstance(risk, dict) else None
         logger.info(
             "[risk] score proxy done tender_ref=%s http=%s source=%s hash=%s",
@@ -649,48 +658,47 @@ async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
             (meta or {}).get("evidence_hash") if isinstance(meta, dict) else None,
         )
         # Persist score + LLM explain cache so reopen skips Qwen.
-        if isinstance(risk, dict) and risk.get("risk_score") is not None:
-            extras = dict(tender.get("extras") or {})
-            gos = dict(extras.get("goszakup") or {}) if isinstance(extras.get("goszakup"), dict) else {}
-            if isinstance(risk.get("doc_extracts"), list) and risk.get("doc_extracts"):
-                gos["doc_extracts"] = risk["doc_extracts"]
-                extras["goszakup"] = gos
-            if isinstance(meta, dict) and risk.get("explanation"):
-                extras["llm_explain"] = {
-                    "text": risk.get("explanation"),
-                    "sections": risk.get("explanation_sections") or {},
-                    "verdicts": risk.get("verdicts") or {},
-                    "provider": meta.get("provider"),
-                    "model": meta.get("model"),
-                    "prompt_version": meta.get("prompt_version"),
-                    "source": meta.get("source"),
-                    "evidence_hash": meta.get("evidence_hash"),
-                    "scored_at": risk.get("scored_at"),
-                    "risk_score": risk.get("risk_score"),
-                    "risk_band": risk.get("risk_band"),
-                    "model_risk_score": risk.get("model_risk_score"),
-                    "model_risk_band": risk.get("model_risk_band"),
-                    "conflict": (risk.get("verdicts") or {}).get("conflict") or meta.get("conflict"),
-                    "confidence": (risk.get("verdicts") or {}).get("confidence") or meta.get("confidence"),
-                    "auditor_band": ((risk.get("verdicts") or {}).get("auditor") or {}).get("risk_band"),
-                    "auditor_summary": ((risk.get("verdicts") or {}).get("auditor") or {}).get("summary"),
-                    "agree_with_model": ((risk.get("verdicts") or {}).get("auditor") or {}).get("agree_with_model"),
-                    "evidence_summary": risk.get("evidence_summary"),
-                    **({"error": meta["error"]} if meta.get("error") else {}),
-                }
-            extras.pop("risk_stale", None)
-            upsert = {
-                **{k: v for k, v in tender.items() if k not in ("id", "ingested_at")},
+        extras = dict(tender.get("extras") or {})
+        gos = dict(extras.get("goszakup") or {}) if isinstance(extras.get("goszakup"), dict) else {}
+        if isinstance(risk.get("doc_extracts"), list) and risk.get("doc_extracts"):
+            gos["doc_extracts"] = risk["doc_extracts"]
+            extras["goszakup"] = gos
+        if isinstance(meta, dict) and risk.get("explanation"):
+            extras["llm_explain"] = {
+                "text": risk.get("explanation"),
+                "sections": risk.get("explanation_sections") or {},
+                "verdicts": risk.get("verdicts") or {},
+                "provider": meta.get("provider"),
+                "model": meta.get("model"),
+                "prompt_version": meta.get("prompt_version"),
+                "source": meta.get("source"),
+                "evidence_hash": meta.get("evidence_hash"),
+                "scored_at": risk.get("scored_at"),
                 "risk_score": risk.get("risk_score"),
                 "risk_band": risk.get("risk_band"),
-                "extras": extras,
+                "model_risk_score": risk.get("model_risk_score"),
+                "model_risk_band": risk.get("model_risk_band"),
+                "conflict": (risk.get("verdicts") or {}).get("conflict") or meta.get("conflict"),
+                "confidence": (risk.get("verdicts") or {}).get("confidence") or meta.get("confidence"),
+                "auditor_band": ((risk.get("verdicts") or {}).get("auditor") or {}).get("risk_band"),
+                "auditor_summary": ((risk.get("verdicts") or {}).get("auditor") or {}).get("summary"),
+                "agree_with_model": ((risk.get("verdicts") or {}).get("auditor") or {}).get("agree_with_model"),
+                "evidence_summary": risk.get("evidence_summary"),
+                **({"error": meta["error"]} if meta.get("error") else {}),
             }
-            try:
-                up = await client.post(f"{SERVICES['tender']}/v1/tenders/upsert", json=upsert)
-                if up.status_code < 400:
-                    tender = up.json()
-            except Exception:
-                pass
+        extras.pop("risk_stale", None)
+        upsert = {
+            **{k: v for k, v in tender.items() if k not in ("id", "ingested_at")},
+            "risk_score": risk.get("risk_score"),
+            "risk_band": risk.get("risk_band"),
+            "extras": extras,
+        }
+        try:
+            up = await client.post(f"{SERVICES['tender']}/v1/tenders/upsert", json=upsert)
+            if up.status_code < 400:
+                tender = up.json()
+        except Exception:
+            pass
     return {"tender": tender, "risk": risk}
 
 
@@ -709,6 +717,13 @@ async def contractors_proxy(request: Request, path: str = "") -> Response:
 @app.api_route("/api/v1/tenders/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 @app.api_route("/api/v1/tenders", methods=["GET", "POST"])
 async def tenders_proxy(request: Request, path: str = "") -> Response:
+    # Ensure .../risk never falls through to tender-service (no such route there).
+    if path.endswith("/risk") or path == "risk":
+        tender_ref = path[: -len("/risk")] if path.endswith("/risk") else ""
+        if not tender_ref:
+            raise HTTPException(status_code=404, detail="tender ref required for risk")
+        force = request.query_params.get("force", "").lower() in ("1", "true", "yes")
+        return await score_tender_card(tender_ref, force=force)
     suffix = f"/v1/tenders/{path}" if path else "/v1/tenders"
     return await _proxy(SERVICES["tender"], suffix, request)
 
