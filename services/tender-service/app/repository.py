@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,52 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Tender
+
+
+def scoring_fingerprint(payload: dict[str, Any]) -> str:
+    """Stable hash of fields that should trigger risk recalculation after parse."""
+    extras = payload.get("extras") or {}
+    gos = extras.get("goszakup") if isinstance(extras.get("goszakup"), dict) else {}
+    docs = gos.get("documents") or []
+    doc_keys = sorted(
+        (
+            str(d.get("name") or d.get("title") or ""),
+            str(d.get("url") or d.get("href") or d.get("id") or ""),
+        )
+        for d in docs
+        if isinstance(d, dict)
+    )
+    key = {
+        "title": payload.get("title"),
+        "amount": payload.get("amount"),
+        "currency": payload.get("currency"),
+        "participants_count": payload.get("participants_count"),
+        "winner_name": payload.get("winner_name"),
+        "procurement_method": payload.get("procurement_method"),
+        "market_amount_est": payload.get("market_amount_est"),
+        "amendments_count": payload.get("amendments_count"),
+        "amendment_amount_ratio": payload.get("amendment_amount_ratio"),
+        "contractor_wins_2y": payload.get("contractor_wins_2y"),
+        "contractor_win_rate": payload.get("contractor_win_rate"),
+        "eco_category": payload.get("eco_category"),
+        "region_code": payload.get("region_code"),
+        "lots_n": len(gos.get("lots") or []),
+        "docs": doc_keys,
+        "protocols_n": len(gos.get("protocols") or []),
+        "contracts_n": len(gos.get("contracts") or []),
+        "status": gos.get("status") or gos.get("announce_status") or gos.get("trd_buy_status_name"),
+    }
+    raw = json.dumps(key, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _merge_extras(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    merged = {**old, **new}
+    old_gos = old.get("goszakup") if isinstance(old.get("goszakup"), dict) else {}
+    new_gos = new.get("goszakup") if isinstance(new.get("goszakup"), dict) else {}
+    if old_gos or new_gos:
+        merged["goszakup"] = {**old_gos, **new_gos}
+    return merged
 
 
 def heuristic_risk(row: dict[str, Any]) -> tuple[float, str]:
@@ -114,10 +161,8 @@ def point_wkt(lat: float | None, lon: float | None) -> WKTElement | None:
 async def upsert_tender_row(session: AsyncSession, payload: dict[str, Any]) -> Tender:
     source_code = payload.get("source_code") or "FIXTURES_CASPIAN"
     external_id = str(payload["external_id"])
-    risk_score = payload.get("risk_score")
-    risk_band = payload.get("risk_band")
-    if risk_score is None or risk_band is None:
-        risk_score, risk_band = heuristic_risk(payload)
+    new_fp = scoring_fingerprint(payload)
+    payload_has_risk = payload.get("risk_score") is not None and payload.get("risk_band") is not None
 
     result = await session.execute(
         select(Tender).where(Tender.source_code == source_code, Tender.external_id == external_id)
@@ -126,6 +171,46 @@ async def upsert_tender_row(session: AsyncSession, payload: dict[str, Any]) -> T
     lat = payload.get("lat")
     lon = payload.get("lon")
     geom = point_wkt(lat, lon)
+
+    if row is None:
+        risk_score = payload.get("risk_score")
+        risk_band = payload.get("risk_band")
+        if risk_score is None or risk_band is None:
+            risk_score, risk_band = heuristic_risk(payload)
+        extras = dict(payload.get("extras") or {})
+        extras["scoring_fingerprint"] = new_fp
+        extras.pop("risk_stale", None)
+    else:
+        old_extras = dict(row.extras or {}) if isinstance(row.extras, dict) else {}
+        new_extras = dict(payload.get("extras") or {})
+        extras = _merge_extras(old_extras, new_extras)
+        old_fp = old_extras.get("scoring_fingerprint") or scoring_fingerprint(
+            {**row.to_dict(), "extras": old_extras}
+        )
+        content_changed = old_fp != new_fp
+
+        if payload_has_risk:
+            # Explicit score from risk API — persist and clear stale flag.
+            risk_score = payload.get("risk_score")
+            risk_band = payload.get("risk_band")
+            extras["scoring_fingerprint"] = new_fp
+            extras.pop("risk_stale", None)
+            if "llm_explain" not in new_extras and old_extras.get("llm_explain"):
+                extras["llm_explain"] = old_extras["llm_explain"]
+        elif not content_changed and row.risk_score is not None:
+            # Re-parse with same material fields — keep saved CatBoost/LLM score.
+            risk_score = row.risk_score
+            risk_band = row.risk_band
+            if old_extras.get("llm_explain") and "llm_explain" not in new_extras:
+                extras["llm_explain"] = old_extras["llm_explain"]
+            extras["scoring_fingerprint"] = old_fp
+            extras.pop("risk_stale", None)
+        else:
+            # Parse detected material changes — invalidate explain, interim heuristic.
+            risk_score, risk_band = heuristic_risk(payload)
+            extras.pop("llm_explain", None)
+            extras["scoring_fingerprint"] = new_fp
+            extras["risk_stale"] = True
 
     fields = {
         "country_code": payload.get("country_code") or "KZ",
@@ -157,7 +242,7 @@ async def upsert_tender_row(session: AsyncSession, payload: dict[str, Any]) -> T
         "geom": geom,
         "published_at": _parse_dt(payload.get("published_at")),
         "deadline_at": _parse_dt(payload.get("deadline_at")),
-        "extras": payload.get("extras") or {},
+        "extras": extras,
     }
 
     if row is None:

@@ -41,6 +41,49 @@ async def score(req: ScoreRequest) -> dict[str, Any]:
     title = req.title or str(tender.get("title") or "")
     logger.info("[score] start tender_id=%s title=%r force=%s", tender_id, title[:80], req.force)
 
+    extras = tender.get("extras") if isinstance(tender.get("extras"), dict) else {}
+    cached = extras.get("llm_explain") if isinstance(extras, dict) else None
+    if (
+        not req.force
+        and not extras.get("risk_stale")
+        and isinstance(cached, dict)
+        and cached.get("text")
+        and cached.get("risk_score") is not None
+    ):
+        logger.info("[score] persisted cache hit tender_id=%s — skip CatBoost/LLM", tender_id)
+        score_val = cached.get("risk_score")
+        band_val = cached.get("risk_band") or tender.get("risk_band")
+        meta = {
+            "provider": cached.get("provider"),
+            "model": cached.get("model"),
+            "prompt_version": cached.get("prompt_version"),
+            "source": "cache",
+            "evidence_hash": cached.get("evidence_hash"),
+            "confidence": cached.get("confidence"),
+            "conflict": cached.get("conflict"),
+        }
+        if cached.get("error"):
+            meta["error"] = cached["error"]
+        return {
+            "tender_id": tender_id,
+            "risk_score": score_val,
+            "risk_band": band_val,
+            "model_risk_score": cached.get("model_risk_score", score_val),
+            "model_risk_band": cached.get("model_risk_band", band_val),
+            "corruption_proba": None,
+            "model_version": None,
+            "scored_at": cached.get("scored_at") or datetime.now(timezone.utc).isoformat(),
+            "explanation": cached.get("text"),
+            "explanation_sections": cached.get("sections") or {},
+            "explanation_meta": meta,
+            "verdicts": cached.get("verdicts") or {},
+            "evidence_summary": cached.get("evidence_summary"),
+            "doc_extracts": None,
+            "reasons": [],
+            "anomalies": [],
+            "feature_vector": {},
+        }
+
     result = score_tender(tender)
     logger.info(
         "[score] catboost tender_id=%s score=%.1f band=%s model=%s",

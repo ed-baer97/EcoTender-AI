@@ -367,7 +367,13 @@ export default function App() {
     if (isMobile) setMobilePane("map");
     const ref = t.id || t.external_id;
     const cached = (t.extras as any)?.llm_explain;
-    if (!opts?.force && cached?.text && cached?.risk_score != null) {
+    const hasSavedRisk =
+      !opts?.force &&
+      cached?.text &&
+      cached?.risk_score != null &&
+      !(t.extras as any)?.risk_stale;
+
+    if (hasSavedRisk) {
       setRisk({
         risk_score: cached.risk_score,
         risk_band: cached.risk_band || t.risk_band || "medium",
@@ -387,7 +393,18 @@ export default function App() {
         evidence_summary: cached.evidence_summary,
         verdicts: cached.verdicts,
       });
+      // Saved score is authoritative — no CatBoost/LLM until parse changes or «Пересчитать».
+      if (t.winner_name) {
+        try {
+          const cRes = await fetch(`${API}/contractors/${encodeURIComponent(t.winner_name)}`);
+          if (cRes.ok) setContractor(await cRes.json());
+        } catch {
+          /* ignore contractor lookup */
+        }
+      }
+      return;
     }
+
     setRiskBusy(true);
     try {
       const q = opts?.force ? "?force=true" : "";

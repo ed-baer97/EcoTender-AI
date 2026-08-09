@@ -573,11 +573,57 @@ async def _proxy(base: str, path: str, request: Request) -> Response:
     return Response(content=upstream.content, status_code=upstream.status_code, media_type=upstream.headers.get("content-type"))
 
 
+def _risk_from_saved_cache(tender: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild risk payload from persisted llm_explain — no CatBoost/LLM."""
+    score = cached.get("risk_score") if cached.get("risk_score") is not None else tender.get("risk_score")
+    band = cached.get("risk_band") or tender.get("risk_band")
+    meta = {
+        "provider": cached.get("provider"),
+        "model": cached.get("model"),
+        "prompt_version": cached.get("prompt_version"),
+        "source": "cache",
+        "evidence_hash": cached.get("evidence_hash"),
+        "confidence": cached.get("confidence"),
+        "conflict": cached.get("conflict"),
+    }
+    if cached.get("error"):
+        meta["error"] = cached["error"]
+    return {
+        "tender_id": tender.get("id"),
+        "risk_score": score,
+        "risk_band": band,
+        "model_risk_score": cached.get("model_risk_score", score),
+        "model_risk_band": cached.get("model_risk_band", band),
+        "model_version": None,
+        "scored_at": cached.get("scored_at"),
+        "explanation": cached.get("text"),
+        "explanation_sections": cached.get("sections") or {},
+        "explanation_meta": meta,
+        "verdicts": cached.get("verdicts") or {},
+        "evidence_summary": cached.get("evidence_summary"),
+        "reasons": [],
+        "anomalies": [],
+        "feature_vector": {},
+    }
+
+
 @app.post("/api/v1/tenders/{tender_ref}/risk")
 async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
     async with httpx.AsyncClient(timeout=120.0) as client:
         t = await client.get(f"{SERVICES['tender']}/v1/tenders/{tender_ref}")
         tender = t.json()
+        extras = tender.get("extras") if isinstance(tender.get("extras"), dict) else {}
+        cached = extras.get("llm_explain") if isinstance(extras, dict) else None
+        if (
+            not force
+            and not extras.get("risk_stale")
+            and isinstance(cached, dict)
+            and cached.get("text")
+            and cached.get("risk_score") is not None
+        ):
+            logger.info("[risk] cache hit tender_ref=%s — skip rescore", tender_ref)
+            return {"tender": tender, "risk": _risk_from_saved_cache(tender, cached)}
+
         payload = {
             "tender_id": tender.get("id"),
             "title": tender.get("title"),
@@ -625,6 +671,7 @@ async def score_tender_card(tender_ref: str, force: bool = False) -> Any:
                     "evidence_summary": risk.get("evidence_summary"),
                     **({"error": meta["error"]} if meta.get("error") else {}),
                 }
+            extras.pop("risk_stale", None)
             upsert = {
                 **{k: v for k, v in tender.items() if k not in ("id", "ingested_at")},
                 "risk_score": risk.get("risk_score"),
