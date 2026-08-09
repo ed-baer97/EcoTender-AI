@@ -131,7 +131,7 @@ type Props = {
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <Box sx={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 1, py: 0.75 }}>
+    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "140px 1fr" }, gap: 1, py: 0.75 }}>
       <Typography variant="body2" color="text.secondary">
         {label}
       </Typography>
@@ -206,10 +206,16 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
 
   return (
     <Box>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} mb={2} flexWrap="wrap" alignItems="center">
-        <Chip label={`Всего в БД: ${total}`} color="primary" variant="outlined" />
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={2}
+        mb={2}
+        flexWrap="wrap"
+        alignItems={{ xs: "stretch", sm: "center" }}
+      >
+        <Chip label={`Всего в БД: ${total}`} color="primary" variant="outlined" sx={{ alignSelf: { xs: "flex-start", sm: "center" } }} />
         {onRunGoszakup && (
-          <Button size="small" variant="contained" onClick={onRunGoszakup} disabled={busy}>
+          <Button size="small" variant="contained" onClick={onRunGoszakup} disabled={busy} sx={{ alignSelf: { xs: "stretch", sm: "center" } }}>
             Запустить goszakup crawl
           </Button>
         )}
@@ -224,9 +230,9 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
               setQ(qInput);
             }
           }}
-          sx={{ minWidth: 200 }}
+          sx={{ minWidth: { xs: 0, sm: 200 }, width: { xs: "100%", sm: "auto" } }}
         />
-        <FormControl size="small" sx={{ minWidth: 100 }}>
+        <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 100 }, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel>Страна</InputLabel>
           <Select
             label="Страна"
@@ -240,7 +246,7 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
             <MenuItem value="KZ">KZ</MenuItem>
           </Select>
         </FormControl>
-        <FormControl size="small" sx={{ minWidth: 180 }}>
+        <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 180 }, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel>Источник</InputLabel>
           <Select
             label="Источник"
@@ -265,8 +271,8 @@ export default function AdminTenders({ token, onRunGoszakup, busy = false }: Pro
         </Alert>
       )}
 
-      <TableContainer sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
-        <Table size="small" stickyHeader>
+      <TableContainer sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, overflowX: "auto", maxWidth: "100%" }}>
+        <Table size="small" stickyHeader sx={{ minWidth: 720 }}>
           <TableHead>
             <TableRow>
               <TableCell>ID</TableCell>

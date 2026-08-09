@@ -473,12 +473,22 @@ export default function AdminPanel({ token, user, onBack }: Props) {
   }
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
-      <Box sx={{ px: 3, py: 1.5, borderBottom: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
-        <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
-          <Typography variant="h5">Кабинет администратора</Typography>
+    <Box sx={{ minHeight: { xs: "100dvh", md: "100vh" }, bgcolor: "background.default" }}>
+      <Box
+        sx={{
+          px: { xs: 1.5, sm: 3 },
+          py: { xs: 1, sm: 1.5 },
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          bgcolor: "background.paper",
+        }}
+      >
+        <Stack direction="row" alignItems="center" spacing={{ xs: 1, sm: 2 }} flexWrap="wrap" useFlexGap>
+          <Typography variant="h5" sx={{ fontSize: { xs: "1.15rem", sm: "1.5rem" } }}>
+            Кабинет администратора
+          </Typography>
           <Chip size="small" color="secondary" label={user.name} />
-          <Box sx={{ flex: 1 }} />
+          <Box sx={{ flex: 1, minWidth: 8 }} />
           <Button size="small" onClick={onBack}>
             ← К карте
           </Button>
@@ -488,8 +498,14 @@ export default function AdminPanel({ token, user, onBack }: Props) {
         </Stack>
       </Box>
 
-      <Box sx={{ p: 3, maxWidth: tab === "tenders" ? 1200 : 960, mx: "auto" }}>
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
+      <Box sx={{ p: { xs: 1.5, sm: 3 }, maxWidth: tab === "tenders" ? 1200 : 960, mx: "auto", overflowX: "hidden" }}>
+        <Tabs
+          value={tab}
+          onChange={(_, v) => setTab(v)}
+          sx={{ mb: 2 }}
+          variant="scrollable"
+          allowScrollButtonsMobile
+        >
           <Tab value="integrations" label="Интеграции" />
           <Tab value="tenders" label="Тендеры в БД" />
         </Tabs>

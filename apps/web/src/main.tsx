@@ -16,6 +16,15 @@ const theme = createTheme({
     h5: { fontFamily: '"Fraunces", "Georgia", serif' },
     button: { textTransform: "none" },
   },
+  components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        html: { height: "100%" },
+        body: { height: "100%", margin: 0 },
+        "#root": { height: "100%", minHeight: "100%" },
+      },
+    },
+  },
 });
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

@@ -14,10 +14,16 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Menu,
+  MenuItem,
   Stack,
   Switch,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import {
   MapContainer,
@@ -36,6 +42,16 @@ function FlyToSelected({ lat, lon }: { lat?: number | null; lon?: number | null 
     if (lat == null || lon == null) return;
     map.flyTo([lat, lon], Math.max(map.getZoom(), 9), { duration: 0.85 });
   }, [lat, lon, map]);
+  return null;
+}
+
+function InvalidateMapSize({ active }: { active: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setTimeout(() => map.invalidateSize(), 80);
+    return () => window.clearTimeout(id);
+  }, [active, map]);
   return null;
 }
 
@@ -248,6 +264,8 @@ const bandColor: Record<string, string> = {
 };
 
 export default function App() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [coast, setCoast] = useState<[number, number][]>([]);
   const [protectedPolys, setProtectedPolys] = useState<PolyFeature[]>([]);
@@ -265,6 +283,8 @@ export default function App() {
   const [email, setEmail] = useState("analyst@ecotender.kz");
   const [password, setPassword] = useState("analyst123");
   const [view, setView] = useState<"map" | "admin">("map");
+  const [mobilePane, setMobilePane] = useState<"list" | "map">("map");
+  const [layersAnchor, setLayersAnchor] = useState<null | HTMLElement>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
 
   useEffect(() => {
@@ -344,6 +364,7 @@ export default function App() {
     setRisk(null);
     setContractor(null);
     setError(null);
+    if (isMobile) setMobilePane("map");
     const ref = t.id || t.external_id;
     const cached = (t.extras as any)?.llm_explain;
     if (!opts?.force && cached?.text && cached?.risk_score != null) {
@@ -417,48 +438,120 @@ export default function App() {
   }
 
   return (
-    <Box sx={{ height: "100vh", display: "grid", gridTemplateRows: "auto 1fr" }}>
-      <Box sx={{ px: 3, py: 1.5, borderBottom: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
-        <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
-          <Typography variant="h5" sx={{ letterSpacing: "-0.02em" }}>
+    <Box
+      sx={{
+        height: { xs: "100dvh", md: "100vh" },
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          px: { xs: 1.5, sm: 3 },
+          py: { xs: 1, sm: 1.5 },
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          bgcolor: "background.paper",
+          flexShrink: 0,
+        }}
+      >
+        <Stack direction="row" alignItems="center" spacing={{ xs: 0.75, sm: 2 }} flexWrap="wrap" useFlexGap>
+          <Typography
+            variant={isMobile ? "h6" : "h5"}
+            sx={{ letterSpacing: "-0.02em", lineHeight: 1.2, flexShrink: 0 }}
+          >
             EcoTender AI
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Казахстан · Каспийское побережье
-          </Typography>
-          <Chip size="small" label="KZ" color="primary" />
-          {(["critical", "high", "medium", "low"] as const).map((b) => (
+          {!isMobile && (
+            <Typography variant="body2" color="text.secondary">
+              Казахстан · Каспийское побережье
+            </Typography>
+          )}
+          {!isMobile && <Chip size="small" label="KZ" color="primary" />}
+          {!isMobile &&
+            (["critical", "high", "medium", "low"] as const).map((b) => (
+              <Chip
+                key={b}
+                size="small"
+                variant="outlined"
+                label={`${b}: ${counts[b]}`}
+                sx={{ borderColor: bandColor[b], color: bandColor[b] }}
+              />
+            ))}
+          {isMobile && (
             <Chip
-              key={b}
               size="small"
               variant="outlined"
-              label={`${b}: ${counts[b]}`}
-              sx={{ borderColor: bandColor[b], color: bandColor[b] }}
+              label={`${counts.critical + counts.high} риск`}
+              sx={{ borderColor: bandColor.high, color: bandColor.high }}
             />
-          ))}
-          <Box sx={{ flex: 1 }} />
-          <FormControlLabel
-            control={<Switch size="small" checked={showGibs} onChange={(_, v) => setShowGibs(v)} />}
-            label={<Typography variant="caption">NASA GIBS</Typography>}
-          />
-          <FormControlLabel
-            control={<Switch size="small" checked={showProtected} onChange={(_, v) => setShowProtected(v)} />}
-            label={<Typography variant="caption">ООПТ</Typography>}
-          />
-          <FormControlLabel
-            control={<Switch size="small" checked={showWork} onChange={(_, v) => setShowWork(v)} />}
-            label={<Typography variant="caption">Полигоны</Typography>}
-          />
+          )}
+          <Box sx={{ flex: 1, minWidth: 8 }} />
+          {isMobile ? (
+            <>
+              <Button size="small" variant="text" onClick={(e) => setLayersAnchor(e.currentTarget)} sx={{ minWidth: 0, px: 1 }}>
+                Слои
+              </Button>
+              <Menu
+                anchorEl={layersAnchor}
+                open={!!layersAnchor}
+                onClose={() => setLayersAnchor(null)}
+                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                transformOrigin={{ vertical: "top", horizontal: "right" }}
+              >
+                <MenuItem disableRipple sx={{ py: 0 }}>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={showGibs} onChange={(_, v) => setShowGibs(v)} />}
+                    label="NASA GIBS"
+                  />
+                </MenuItem>
+                <MenuItem disableRipple sx={{ py: 0 }}>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={showProtected} onChange={(_, v) => setShowProtected(v)} />}
+                    label="ООПТ"
+                  />
+                </MenuItem>
+                <MenuItem disableRipple sx={{ py: 0 }}>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={showWork} onChange={(_, v) => setShowWork(v)} />}
+                    label="Полигоны"
+                  />
+                </MenuItem>
+              </Menu>
+            </>
+          ) : (
+            <>
+              <FormControlLabel
+                control={<Switch size="small" checked={showGibs} onChange={(_, v) => setShowGibs(v)} />}
+                label={<Typography variant="caption">NASA GIBS</Typography>}
+              />
+              <FormControlLabel
+                control={<Switch size="small" checked={showProtected} onChange={(_, v) => setShowProtected(v)} />}
+                label={<Typography variant="caption">ООПТ</Typography>}
+              />
+              <FormControlLabel
+                control={<Switch size="small" checked={showWork} onChange={(_, v) => setShowWork(v)} />}
+                label={<Typography variant="caption">Полигоны</Typography>}
+              />
+            </>
+          )}
           {user?.role === "admin" && (
-            <Button size="small" variant="contained" color="secondary" onClick={() => setView("admin")}>
-              Кабинет администратора
+            <Button
+              size="small"
+              variant="contained"
+              color="secondary"
+              onClick={() => setView("admin")}
+              sx={{ whiteSpace: "nowrap" }}
+            >
+              {isMobile ? "Админ" : "Кабинет администратора"}
             </Button>
           )}
           {user ? (
             <Chip
               size="small"
               color={user.role === "admin" ? "secondary" : "default"}
-              label={`${user.name} · ${user.role}`}
+              label={isMobile ? user.role : `${user.name} · ${user.role}`}
               onDelete={logout}
             />
           ) : (
@@ -470,17 +563,76 @@ export default function App() {
       </Box>
 
       {error && (
-        <Alert severity="warning" sx={{ borderRadius: 0 }} onClose={() => setError(null)}>
+        <Alert severity="warning" sx={{ borderRadius: 0, py: 0.5, flexShrink: 0 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
 
-      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "360px 1fr" }, minHeight: 0 }}>
-        <Box sx={{ overflow: "auto", borderRight: "1px solid", borderColor: "divider", bgcolor: "background.paper" }}>
-          <Box sx={{ p: 2 }}>
+      {isMobile && (
+        <Box
+          sx={{
+            px: 1.5,
+            py: 1,
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            bgcolor: "background.paper",
+            flexShrink: 0,
+          }}
+        >
+          <ToggleButtonGroup
+            exclusive
+            fullWidth
+            size="small"
+            value={mobilePane}
+            onChange={(_, v) => v && setMobilePane(v)}
+          >
+            <ToggleButton value="list">Список · {tenders.length}</ToggleButton>
+            <ToggleButton value="map">Карта</ToggleButton>
+          </ToggleButtonGroup>
+        </Box>
+      )}
+
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", md: "360px 1fr" },
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <Box
+          sx={{
+            overflow: "auto",
+            borderRight: { md: "1px solid" },
+            borderColor: "divider",
+            bgcolor: "background.paper",
+            display: { xs: mobilePane === "list" ? "block" : "none", md: "block" },
+            minHeight: 0,
+            WebkitOverflowScrolling: "touch",
+            position: { xs: "absolute", md: "relative" },
+            inset: { xs: 0, md: "auto" },
+            zIndex: { xs: 2, md: "auto" },
+          }}
+        >
+          <Box sx={{ p: 2, position: "sticky", top: 0, bgcolor: "background.paper", zIndex: 1 }}>
             <Typography variant="subtitle2" color="text.secondary">
               Эко-тендеры KZ · {tenders.length}
             </Typography>
+            {isMobile && (
+              <Stack direction="row" gap={0.5} flexWrap="wrap" mt={1}>
+                {(["critical", "high", "medium", "low"] as const).map((b) => (
+                  <Chip
+                    key={b}
+                    size="small"
+                    variant="outlined"
+                    label={`${b}: ${counts[b]}`}
+                    sx={{ borderColor: bandColor[b], color: bandColor[b] }}
+                  />
+                ))}
+              </Stack>
+            )}
           </Box>
           <List dense>
             {[...tenders]
@@ -527,9 +679,19 @@ export default function App() {
           </List>
         </Box>
 
-        <Box sx={{ position: "relative", minHeight: 420 }}>
+        <Box
+          sx={{
+            position: { xs: "absolute", md: "relative" },
+            inset: { xs: 0, md: "auto" },
+            minHeight: 0,
+            height: { md: "100%" },
+            visibility: { xs: mobilePane === "map" ? "visible" : "hidden", md: "visible" },
+            zIndex: { xs: 1, md: "auto" },
+          }}
+        >
           <MapContainer center={center} zoom={6} style={{ height: "100%", width: "100%" }}>
             <FlyToSelected lat={selected?.lat} lon={selected?.lon} />
+            <InvalidateMapSize active={!isMobile || mobilePane === "map"} />
             <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             {showGibs && <TileLayer url={GIBS_URL} opacity={0.55} attribution="NASA GIBS" maxNativeZoom={8} />}
             {coast.length > 0 && <Polyline positions={coast} pathOptions={{ color: "#1B4965", weight: 2 }} />}
@@ -591,12 +753,32 @@ export default function App() {
         </Box>
       </Box>
 
-      <Drawer anchor="right" open={!!selected} onClose={() => setSelected(null)} PaperProps={{ sx: { width: { xs: "100%", sm: 440 } } }}>
+      <Drawer
+        anchor={isMobile ? "bottom" : "right"}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        PaperProps={{
+          sx: {
+            width: { xs: "100%", sm: isMobile ? "100%" : 440 },
+            maxHeight: { xs: "88dvh", sm: "100%" },
+            borderTopLeftRadius: { xs: 12, sm: 0 },
+            borderTopRightRadius: { xs: 12, sm: 0 },
+          },
+        }}
+      >
         {selected && (
-          <Box sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              {selected.title}
-            </Typography>
+          <Box sx={{ p: { xs: 2, sm: 3 }, pb: { xs: "max(16px, env(safe-area-inset-bottom))", sm: 3 }, overflow: "auto" }}>
+            {isMobile && (
+              <Box sx={{ width: 40, height: 4, borderRadius: 2, bgcolor: "divider", mx: "auto", mb: 1.5 }} />
+            )}
+            <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1} mb={1}>
+              <Typography variant="h6" sx={{ fontSize: { xs: "1.05rem", sm: "1.25rem" }, pr: 1 }}>
+                {selected.title}
+              </Typography>
+              <Button size="small" onClick={() => setSelected(null)} sx={{ flexShrink: 0, minWidth: 0 }}>
+                Закрыть
+              </Button>
+            </Stack>
             <Stack direction="row" gap={1} flexWrap="wrap" mb={1} alignItems="center">
               <Chip size="small" label="KZ" />
               <Chip size="small" label={selected.eco_category || "eco"} variant="outlined" />
@@ -627,7 +809,7 @@ export default function App() {
             {risk ? (
               <Stack spacing={1.5} mb={2}>
                 <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                  <Typography variant="h4" sx={{ color: bandColor[risk.risk_band] || "text.primary" }}>
+                  <Typography variant="h4" sx={{ color: bandColor[risk.risk_band] || "text.primary", fontSize: { xs: "1.75rem", sm: "2.125rem" } }}>
                     {risk.risk_score}
                     <Typography component="span" variant="body2" color="text.secondary">
                       {" "}
@@ -658,7 +840,7 @@ export default function App() {
                       borderColor: bandColor[risk.verdicts?.model?.risk_band || risk.model_risk_band || risk.risk_band] || undefined,
                       height: "auto",
                       py: 0.6,
-                      "& .MuiChip-label": { whiteSpace: "normal", maxWidth: 200 },
+                      "& .MuiChip-label": { whiteSpace: "normal", maxWidth: { xs: "100%", sm: 200 } },
                     }}
                     label={`Модель: ${risk.verdicts?.model?.risk_score ?? risk.model_risk_score ?? risk.risk_score} · ${
                       risk.verdicts?.model?.risk_band || risk.model_risk_band || risk.risk_band
@@ -668,7 +850,7 @@ export default function App() {
                     size="small"
                     variant="outlined"
                     color={risk.verdicts?.conflict ? "warning" : "default"}
-                    sx={{ height: "auto", py: 0.6, "& .MuiChip-label": { whiteSpace: "normal", maxWidth: 220 } }}
+                    sx={{ height: "auto", py: 0.6, "& .MuiChip-label": { whiteSpace: "normal", maxWidth: { xs: "100%", sm: 220 } } }}
                     label={`Аудитор: ${risk.verdicts?.auditor?.risk_band || risk.risk_band}${
                       risk.verdicts?.auditor?.summary
                         ? ` — ${String(risk.verdicts.auditor.summary).slice(0, 90)}`
@@ -750,7 +932,7 @@ export default function App() {
                   </Box>
                 )}
                 {Object.keys(gosExtras(selected).filters).length > 0 && (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-all" }}>
                     search: {JSON.stringify(gosExtras(selected).filters)}
                   </Typography>
                 )}
@@ -814,10 +996,10 @@ export default function App() {
         )}
       </Drawer>
 
-      <Dialog open={loginOpen} onClose={() => setLoginOpen(false)}>
+      <Dialog open={loginOpen} onClose={() => setLoginOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Вход</DialogTitle>
         <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1, minWidth: 280 }}>
+          <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField label="Email" value={email} onChange={(e) => setEmail(e.target.value)} fullWidth size="small" />
             <TextField
               label="Пароль"
