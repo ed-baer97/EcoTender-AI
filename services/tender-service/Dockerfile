@@ -3,8 +3,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends libgeos-c1v5 \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir \
-    fastapi uvicorn pydantic \
-    "sqlalchemy[asyncio]>=2.0" asyncpg alembic geoalchemy2 greenlet
+    fastapi uvicorn pydantic python-multipart \
+    "sqlalchemy[asyncio]>=2.0" asyncpg alembic geoalchemy2 greenlet minio
 COPY packages/shared /packages/shared
 RUN pip install -e /packages/shared
 COPY services/tender-service/alembic.ini ./alembic.ini

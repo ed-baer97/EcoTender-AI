@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -247,6 +248,16 @@ type Contractor = {
   tenders?: { external_id: string; title: string; risk_score?: number; risk_band?: string }[];
 };
 
+type PatrolReport = {
+  id: string;
+  tender_id: string;
+  author_name: string;
+  body: string;
+  has_photo?: boolean;
+  photo_url?: string | null;
+  created_at?: string | null;
+};
+
 type User = { email: string; role: string; name: string };
 
 type PolyFeature = {
@@ -274,6 +285,12 @@ export default function App() {
   const [risk, setRisk] = useState<Risk | null>(null);
   const [riskBusy, setRiskBusy] = useState(false);
   const [contractor, setContractor] = useState<Contractor | null>(null);
+  const [patrol, setPatrol] = useState<PatrolReport[]>([]);
+  const [patrolBusy, setPatrolBusy] = useState(false);
+  const [patrolAuthor, setPatrolAuthor] = useState("");
+  const [patrolBody, setPatrolBody] = useState("");
+  const [patrolPhoto, setPatrolPhoto] = useState<File | null>(null);
+  const [patrolSending, setPatrolSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showGibs, setShowGibs] = useState(false);
   const [showProtected, setShowProtected] = useState(true);
@@ -359,13 +376,70 @@ export default function App() {
     return c;
   }, [tenders]);
 
+  async function loadPatrol(t: Tender) {
+    const ref = t.id || t.external_id;
+    setPatrolBusy(true);
+    try {
+      const res = await fetch(`${API}/tenders/${ref}/patrol`);
+      if (res.ok) {
+        const data = await res.json();
+        setPatrol(data.items || []);
+      } else {
+        setPatrol([]);
+      }
+    } catch {
+      setPatrol([]);
+    } finally {
+      setPatrolBusy(false);
+    }
+  }
+
+  async function submitPatrol() {
+    if (!selected) return;
+    const name = patrolAuthor.trim();
+    const text = patrolBody.trim();
+    if (!name || !text) {
+      setError("Укажите имя и комментарий для народного патруля");
+      return;
+    }
+    const ref = selected.id || selected.external_id;
+    setPatrolSending(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("author_name", name);
+      form.append("body", text);
+      if (patrolPhoto) form.append("photo", patrolPhoto);
+      const res = await fetch(`${API}/tenders/${ref}/patrol`, { method: "POST", body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.detail || "Не удалось отправить отчёт");
+      }
+      setPatrolBody("");
+      setPatrolPhoto(null);
+      await loadPatrol(selected);
+    } catch (e: any) {
+      setError(e?.message || "Не удалось отправить отчёт");
+    } finally {
+      setPatrolSending(false);
+    }
+  }
+
+  function patrolPhotoSrc(report: PatrolReport): string | null {
+    if (!report.photo_url) return null;
+    if (report.photo_url.startsWith("http")) return report.photo_url;
+    return `${API}${report.photo_url}`;
+  }
+
   async function openTender(t: Tender, opts?: { force?: boolean }) {
     setSelected(t);
     setRisk(null);
     setContractor(null);
+    setPatrol([]);
     setError(null);
     if (isMobile) setMobilePane("map");
     const ref = t.id || t.external_id;
+    void loadPatrol(t);
     const cached = (t.extras as any)?.llm_explain;
     const hasSavedRisk =
       !opts?.force &&
@@ -1008,6 +1082,110 @@ export default function App() {
                   </Alert>
                 )}
               </>
+            )}
+
+            <Divider sx={{ my: 2 }} />
+            <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+              <Typography variant="subtitle1">Народный патруль</Typography>
+              <Chip size="small" label={patrol.length} />
+            </Stack>
+            <Typography variant="body2" color="text.secondary" mb={1.5}>
+              Оставьте комментарий и фото по этому тендеру — увидят все.
+            </Typography>
+            <Stack spacing={1.25} mb={2}>
+              <TextField
+                size="small"
+                label="Ваше имя"
+                value={patrolAuthor}
+                onChange={(e) => setPatrolAuthor(e.target.value)}
+                inputProps={{ maxLength: 80 }}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="Комментарий"
+                value={patrolBody}
+                onChange={(e) => setPatrolBody(e.target.value)}
+                inputProps={{ maxLength: 2000 }}
+                multiline
+                minRows={2}
+                fullWidth
+              />
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Button variant="outlined" component="label" size="small">
+                  {patrolPhoto ? patrolPhoto.name : "Фото"}
+                  <input
+                    hidden
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(e) => setPatrolPhoto(e.target.files?.[0] || null)}
+                  />
+                </Button>
+                {patrolPhoto && (
+                  <Button size="small" onClick={() => setPatrolPhoto(null)}>
+                    Убрать
+                  </Button>
+                )}
+                <Button
+                  variant="contained"
+                  size="small"
+                  disabled={patrolSending || !patrolAuthor.trim() || !patrolBody.trim()}
+                  onClick={() => void submitPatrol()}
+                >
+                  {patrolSending ? "Отправка…" : "Отправить"}
+                </Button>
+              </Stack>
+            </Stack>
+            {patrolBusy ? (
+              <Stack direction="row" spacing={1} alignItems="center" py={1}>
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">
+                  Загрузка отчётов…
+                </Typography>
+              </Stack>
+            ) : patrol.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                Пока нет отчётов — будьте первым.
+              </Typography>
+            ) : (
+              <Stack spacing={1.5}>
+                {patrol.map((r) => {
+                  const src = patrolPhotoSrc(r);
+                  return (
+                    <Box
+                      key={r.id}
+                      sx={{
+                        borderTop: "1px solid",
+                        borderColor: "divider",
+                        pt: 1.25,
+                      }}
+                    >
+                      <Typography variant="subtitle2">{r.author_name}</Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
+                        {r.created_at ? new Date(r.created_at).toLocaleString("ru-RU") : ""}
+                      </Typography>
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                        {r.body}
+                      </Typography>
+                      {src && (
+                        <Box
+                          component="img"
+                          src={src}
+                          alt={`Фото от ${r.author_name}`}
+                          sx={{
+                            mt: 1,
+                            maxWidth: "100%",
+                            maxHeight: 220,
+                            borderRadius: 1,
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      )}
+                    </Box>
+                  );
+                })}
+              </Stack>
             )}
           </Box>
         )}

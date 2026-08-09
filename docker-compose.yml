@@ -108,6 +108,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ecotender}:${POSTGRES_PASSWORD:-ecotender}@postgres:5432/${POSTGRES_DB:-ecotender}
       REDIS_URL: redis://redis:6379/0
       SERVICE_PORT: 8001
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-ecotender-raw}
     ports:
       - "8001:8001"
     depends_on:
@@ -115,6 +119,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
 
   market-service:
     build:

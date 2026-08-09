@@ -562,15 +562,22 @@ async def _proxy(base: str, path: str, request: Request) -> Response:
     url = f"{base}{path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    # Drop hop-by-hop / length so multipart uploads re-frame cleanly.
+    skip = {"host", "content-length", "transfer-encoding", "connection"}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+    async with httpx.AsyncClient(timeout=120.0) as client:
         body = await request.body()
         upstream = await client.request(
             request.method,
             url,
             content=body,
-            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            headers=headers,
         )
-    return Response(content=upstream.content, status_code=upstream.status_code, media_type=upstream.headers.get("content-type"))
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 
 def _risk_from_saved_cache(tender: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from geoalchemy2 import Geography
-from sqlalchemy import DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -95,4 +95,36 @@ class Tender(Base):
             "deadline_at": self.deadline_at.isoformat() if self.deadline_at else None,
             "extras": self.extras or {},
             "ingested_at": self.ingested_at.isoformat() if self.ingested_at else None,
+        }
+
+
+class PatrolReport(Base):
+    __tablename__ = "patrol_reports"
+    __table_args__ = {"schema": "tender"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tender_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tender.tenders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    photo_bucket: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def to_dict(self, *, photo_url: str | None = None) -> dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "tender_id": str(self.tender_id),
+            "author_name": self.author_name,
+            "body": self.body,
+            "has_photo": bool(self.photo_key),
+            "photo_url": photo_url,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
