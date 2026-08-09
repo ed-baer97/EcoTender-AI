@@ -287,15 +287,29 @@ def _features_sparse(features: dict[str, Any]) -> bool:
 _MODEL_CACHE: dict[str, Any] = {}
 
 
-def _predict_proba(features: dict[str, Any]) -> tuple[float, str]:
-    """Prefer CatBoost artifact; fall back to heuristic."""
+def _resolve_model_path() -> Path:
+    """Resolve CatBoost artifact path without assuming a fixed repo depth (breaks in Docker)."""
     import os
     from pathlib import Path
 
-    model_path = Path(os.getenv("MODEL_PATH", "/models/catboost_risk_v1.cbm"))
-    if not model_path.exists():
-        alt = Path(__file__).resolve().parents[4] / "ml" / "models" / "catboost_risk_v1.cbm"
-        model_path = alt if alt.exists() else model_path
+    configured = Path(os.getenv("MODEL_PATH", "/models/catboost_risk_v1.cbm"))
+    candidates = [configured]
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidates.append(parent / "ml" / "models" / "catboost_risk_v1.cbm")
+        candidates.append(parent / "models" / "catboost_risk_v1.cbm")
+    for path in candidates:
+        try:
+            if path.exists():
+                return path
+        except OSError:
+            continue
+    return configured
+
+
+def _predict_proba(features: dict[str, Any]) -> tuple[float, str]:
+    """Prefer CatBoost artifact; fall back to heuristic."""
+    model_path = _resolve_model_path()
 
     if model_path.exists():
         try:
