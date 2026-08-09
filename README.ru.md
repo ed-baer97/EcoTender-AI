@@ -9,7 +9,7 @@
 > MVP на Docker Compose; каркас масштабируется до государственной платформы.
 
 **GitHub:** https://github.com/ed-baer97/EcoTender-AI  
-**Авторы:** [AUTHORS.md](AUTHORS.md)  
+**Команда:** IT LYCEUM Team · [AUTHORS.md](AUTHORS.md)  
 **Описание проекта:** [docs/ru/PROJECT_DESCRIPTION.md](docs/ru/PROJECT_DESCRIPTION.md)  
 **Документация:** [docs/README.md](docs/README.md)
 
@@ -17,20 +17,21 @@
 
 ## Краткое описание
 
-EcoTender AI собирает экологически релевантные госзакупки (Казахстан / Каспий), сравнивает цены с рынком, показывает объекты на карте (PostGIS + Leaflet) и считает **Risk Score 0–100** моделью CatBoost с текстовым объяснением для аудитора (LLM API или шаблон без ключа).
+EcoTender AI собирает экологически релевантные госзакупки (Казахстан / Каспий), сравнивает цены с рынком, показывает объекты на карте (PostGIS + Leaflet) и считает **Risk Score 0–100** собственной моделью CatBoost. Поверх score — слой текстовых объяснений для аудитора: OpenAI-совместимый API (облако или локальный on-prem) либо шаблон без ключа.
 
-Фокус: прозрачность средств на сохранение Каспийского моря + геоинформационный мониторинг эко-проектов.
+Фокус: прозрачность средств на сохранение Каспийского моря + геоинформационный мониторинг эко-проектов. Risk Score — аналитический сигнал для проверки, не гарантия результата и не юридическое обвинение.
 
 ## Основные функции
 
 1. **Каталог эко-тендеров** — список, фильтры, карточка закупки (fixtures / goszakup).
 2. **Карта рисков** — маркеры по уровню риска, слои ООПТ / NASA GIBS (demo).
-3. **Risk Score** — CatBoost 0–100, bands low → critical.
-4. **Explain** — причины оценки (LLM или template fallback).
+3. **Risk Score** — CatBoost 0–100, bands low → critical; оценка сохраняется и пересчитывается при изменении данных парсинга (или вручную).
+4. **Explain** — перевод сигнала на язык проверки (OpenAI-compatible API / template fallback).
 5. **Рыночное сравнение** — отклонение цены от ориентира.
-6. **Ingestion** — парсер goszakup (OWS v3 / Playwright), Celery + Flower.
-7. **Кабинет администратора** — ключи LLM/парсеров с шифрованием at rest.
-8. **Auth (demo)** — JWT, роли viewer / analyst / admin.
+6. **Ingestion** — приоритет API goszakup (OWS v3), запасной путь Playwright; Celery + Flower.
+7. **Народный патруль** — гостевые комментарии и фото к тендеру (общественный контроль).
+8. **Кабинет администратора** — ключи LLM/парсеров с шифрованием at rest.
+9. **Auth (demo)** — JWT, роли viewer / analyst / admin.
 
 Подробнее: [docs/ru/PROJECT_DESCRIPTION.md](docs/ru/PROJECT_DESCRIPTION.md).
 
@@ -52,7 +53,7 @@ EcoTender AI собирает экологически релевантные г
 - (Опционально) Git — клонирование репозитория  
 - Браузер: Chrome / Edge / Firefox актуальной версии  
 
-LLM-ключ **не обязателен**: без него работает template explain. Ключ goszakup OWS — опционален (есть Playwright-stub и fixtures).
+Ключ LLM **не обязателен**: без него работает template explain. Ключ goszakup OWS — опционален (есть Playwright-stub и fixtures).
 
 ---
 
@@ -132,7 +133,7 @@ scripts/                 # smoke_check и утилиты
 **Backend:** FastAPI · SQLAlchemy 2 · Alembic · Celery · Redis 8 · PostgreSQL 17 + PostGIS 3.5  
 **Frontend:** React 19 · TypeScript · Vite 6 · MUI 7 · Leaflet / react-leaflet 5  
 **Ingestion:** Playwright · BeautifulSoup · lxml  
-**AI:** CatBoost (свой score) + LLM API (gpt-5.6-terra / DeepSeek / Qwen 3.8 Max) · template fallback  
+**AI:** CatBoost (собственный Risk Score) + LLM-слой explain через OpenAI-совместимый API (облако или on-prem; напр. Qwen / DeepSeek) · template fallback  
 **GIS:** PostGIS 3.5 · GeoPandas · Shapely · Leaflet  
 
 Версии: [docs/ru/STACK.md](docs/ru/STACK.md). Зависимости Python — `packages/shared/pyproject.toml` и `requirements` сервисов; фронт — `apps/web/package.json`.

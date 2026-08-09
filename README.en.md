@@ -9,7 +9,7 @@ AI platform for transparency of environmental tenders around the Caspian Sea
 > Docker Compose MVP; designed to scale into a national platform.
 
 **GitHub:** https://github.com/ed-baer97/EcoTender-AI  
-**Authors:** [AUTHORS.md](AUTHORS.md)  
+**Team:** IT LYCEUM Team · [AUTHORS.md](AUTHORS.md)  
 **Project description:** [docs/en/PROJECT_DESCRIPTION.md](docs/en/PROJECT_DESCRIPTION.md)  
 **Documentation index:** [docs/README.md](docs/README.md)
 
@@ -17,20 +17,21 @@ AI platform for transparency of environmental tenders around the Caspian Sea
 
 ## Overview
 
-EcoTender AI collects environmentally relevant public procurement (Kazakhstan / Caspian), compares prices to market references, shows objects on a map (PostGIS + Leaflet), and computes a **Risk Score 0–100** with CatBoost plus a textual explanation for auditors (LLM API or template fallback without a key).
+EcoTender AI collects environmentally relevant public procurement (Kazakhstan / Caspian), compares prices to market references, shows objects on a map (PostGIS + Leaflet), and computes a **Risk Score 0–100** with our own CatBoost model. On top of the score is an explanation layer for auditors: an OpenAI-compatible API (cloud or local on-prem) or a template fallback without a key.
 
-Focus: transparency of funds for Caspian Sea conservation + geospatial monitoring of eco-projects.
+Focus: transparency of funds for Caspian Sea conservation + geospatial monitoring of eco-projects. Risk Score is an analytical signal for review — not a guarantee of outcomes and not a legal accusation.
 
 ## Main features
 
 1. **Eco-tender catalog** — list, filters, tender card (fixtures / goszakup).
 2. **Risk map** — markers by risk band, protected areas / NASA GIBS (demo).
-3. **Risk Score** — CatBoost 0–100, bands low → critical.
-4. **Explain** — scoring reasons (LLM or template fallback).
+3. **Risk Score** — CatBoost 0–100, bands low → critical; persisted and rescored when parse data changes (or manually).
+4. **Explain** — turns the score into auditor language (OpenAI-compatible API / template fallback).
 5. **Market comparison** — price deviation from reference.
-6. **Ingestion** — goszakup parser (OWS v3 / Playwright), Celery + Flower.
-7. **Admin cabinet** — LLM/parser keys encrypted at rest.
-8. **Auth (demo)** — JWT, roles viewer / analyst / admin.
+6. **Ingestion** — goszakup API first (OWS v3), Playwright fallback; Celery + Flower.
+7. **People's Patrol** — guest comments and photos on a tender (public oversight).
+8. **Admin cabinet** — LLM/parser keys encrypted at rest.
+9. **Auth (demo)** — JWT, roles viewer / analyst / admin.
 
 Details: [docs/en/PROJECT_DESCRIPTION.md](docs/en/PROJECT_DESCRIPTION.md).
 
@@ -132,7 +133,7 @@ Architecture: [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md).
 **Backend:** FastAPI · SQLAlchemy 2 · Alembic · Celery · Redis 8 · PostgreSQL 17 + PostGIS 3.5  
 **Frontend:** React 19 · TypeScript · Vite 6 · MUI 7 · Leaflet / react-leaflet 5  
 **Ingestion:** Playwright · BeautifulSoup · lxml  
-**AI:** CatBoost (decision) + LLM API (gpt-5.6-terra / DeepSeek / Qwen 3.8 Max) · template fallback  
+**AI:** CatBoost (own Risk Score) + LLM explain via OpenAI-compatible API (cloud or on-prem; e.g. Qwen / DeepSeek) · template fallback  
 **GIS:** PostGIS 3.5 · GeoPandas · Shapely · Leaflet  
 
 Versions: [docs/en/STACK.md](docs/en/STACK.md).

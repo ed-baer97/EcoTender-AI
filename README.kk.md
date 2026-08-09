@@ -9,7 +9,7 @@
 > Docker Compose MVP; мемлекеттік платформаға дейін масштабталады.
 
 **GitHub:** https://github.com/ed-baer97/EcoTender-AI  
-**Авторлар:** [AUTHORS.md](AUTHORS.md)  
+**Команда:** IT LYCEUM Team · [AUTHORS.md](AUTHORS.md)  
 **Жоба сипаттамасы:** [docs/kk/PROJECT_DESCRIPTION.md](docs/kk/PROJECT_DESCRIPTION.md)  
 **Құжаттама:** [docs/README.md](docs/README.md)
 
@@ -17,20 +17,21 @@
 
 ## Қысқаша сипаттама
 
-EcoTender AI экологиялық маңызы бар мемлекеттік сатып алуларды (Қазақстан / Каспий) жинайды, бағаларды нарықпен салыстырады, нысандарды картада көрсетеді (PostGIS + Leaflet) және CatBoost моделімен **Risk Score 0–100** есептейді, аудиторға мәтіндік түсініктеме береді (LLM API немесе кілтсіз шаблон).
+EcoTender AI экологиялық маңызы бар мемлекеттік сатып алуларды (Қазақстан / Каспий) жинайды, бағаларды нарықпен салыстырады, нысандарды картада көрсетеді (PostGIS + Leaflet) және өз CatBoost моделімен **Risk Score 0–100** есептейді. Score үстінде — аудиторға арналған түсініктеме қабаты: OpenAI-үйлесімді API (бұлт немесе жергілікті on-prem) не кілтсіз шаблон.
 
-Бағыт: Каспийді сақтауға бөлінген қаражаттың ашықтығы + эко-жобалардың геомониторингі.
+Бағыт: Каспийді сақтауға бөлінген қаражаттың ашықтығы + эко-жобалардың геомониторингі. Risk Score — тексеруге арналған аналитикалық сигнал, нәтижеге кепілдік емес және заңды айыптау емес.
 
 ## Негізгі функциялар
 
 1. **Эко-тендерлер каталогы** — тізім, сүзгілер, карточка (fixtures / goszakup).
 2. **Тәуекел картасы** — тәуекел деңгейі бойынша маркерлер, ЕҚТА / NASA GIBS (demo).
-3. **Risk Score** — CatBoost 0–100, bands low → critical.
-4. **Explain** — бағалау себептері (LLM немесе template fallback).
+3. **Risk Score** — CatBoost 0–100, bands low → critical; сақталады және парсинг деректері өзгергенде (немесе қолмен) қайта есептеледі.
+4. **Explain** — сигналды тексеру тіліне аудару (OpenAI-compatible API / template fallback).
 5. **Нарықтық салыстыру** — бағаның бағдардан ауытқуы.
-6. **Ingestion** — goszakup парсері (OWS v3 / Playwright), Celery + Flower.
-7. **Әкімші кабинеті** — LLM/парсер кілттері шифрланған түрде.
-8. **Auth (demo)** — JWT, рөлдер viewer / analyst / admin.
+6. **Ingestion** — басымдық goszakup API (OWS v3), резерв Playwright; Celery + Flower.
+7. **Халықтық патруль** — тендерге қонақ пікірлері мен фото (қоғамдық бақылау).
+8. **Әкімші кабинеті** — LLM/парсер кілттері шифрланған түрде.
+9. **Auth (demo)** — JWT, рөлдер viewer / analyst / admin.
 
 Толығырақ: [docs/kk/PROJECT_DESCRIPTION.md](docs/kk/PROJECT_DESCRIPTION.md).
 
@@ -132,7 +133,7 @@ scripts/                 # smoke_check
 **Backend:** FastAPI · SQLAlchemy 2 · Alembic · Celery · Redis 8 · PostgreSQL 17 + PostGIS 3.5  
 **Frontend:** React 19 · TypeScript · Vite 6 · MUI 7 · Leaflet  
 **Ingestion:** Playwright · BeautifulSoup · lxml  
-**AI:** CatBoost + LLM API · template fallback  
+**AI:** CatBoost (өз Risk Score) + LLM explain — OpenAI-үйлесімді API (бұлт / on-prem; мыс. Qwen / DeepSeek) · template fallback  
 **GIS:** PostGIS 3.5 · GeoPandas · Shapely · Leaflet  
 
 Нұсқалар: [docs/kk/STACK.md](docs/kk/STACK.md).

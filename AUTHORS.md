@@ -15,7 +15,7 @@ Caspian Hackathon 2026 · https://github.com/ed-baer97/EcoTender-AI
 | Data / ingestion | _(указать)_ | |
 | Product | _(указать)_ | |
 
-**Команда:** _(указать)_  
+**Команда:** IT LYCEUM Team  
 **Владелец репозитория:** [ed-baer97](https://github.com/ed-baer97)
 
 ---
@@ -29,7 +29,7 @@ Caspian Hackathon 2026 · https://github.com/ed-baer97/EcoTender-AI
 | Data / ingestion | _(fill in)_ | |
 | Product | _(fill in)_ | |
 
-**Team name:** _(fill in)_  
+**Team name:** IT LYCEUM Team  
 **Repository owner:** [ed-baer97](https://github.com/ed-baer97)
 
 ---
@@ -43,5 +43,5 @@ Caspian Hackathon 2026 · https://github.com/ed-baer97/EcoTender-AI
 | Data / ingestion | _(толтыру)_ | |
 | Product | _(толтыру)_ | |
 
-**Команда атауы:** _(толтыру)_  
+**Команда атауы:** IT LYCEUM Team  
 **Репозиторий иесі:** [ed-baer97](https://github.com/ed-baer97)
