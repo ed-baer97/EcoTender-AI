@@ -11,3 +11,4 @@ data/runtime/config.json
 .vscode/
 pgdata/
 *.log
+from-server/
